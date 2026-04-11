@@ -1,12 +1,11 @@
 "use client";
 
-import { Card, Progress, Space, Typography } from "antd";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MediaPlaylistItem } from "@/config/types";
 import { getYouTubeVideoId } from "@/media/youtube";
 
 type Props = {
-  title?: string;
   items: MediaPlaylistItem[];
   loop: boolean;
 };
@@ -38,7 +37,7 @@ type YouTubeApiLike = {
   ) => YouTubePlayerLike;
 };
 
-export function MediaPanel({ title = "Announcements", items, loop }: Props) {
+export function MediaPanel({ items, loop }: Props) {
   const [idx, setIdx] = useState(0);
   const [tick, setTick] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -204,72 +203,156 @@ export function MediaPanel({ title = "Announcements", items, loop }: Props) {
   }, [current?.id]);
 
   return (
-    <Card
-      title={
-        <Space orientation="vertical" size={0}>
-          <Typography.Text strong>{title}</Typography.Text>
-          {current?.title ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {current.title}
-            </Typography.Text>
-          ) : null}
-        </Space>
-      }
-      styles={{
-        body: { padding: 0, height: "calc(100% - 58px)" },
+    <div
+      style={{
+        height: "100%",
+        borderRadius: 12,
+        overflow: "hidden",
+        position: "relative",
+        background: "#000",
+        boxShadow: "0 4px 24px rgba(0,0,0,0.5)",
       }}
-      style={{ height: "100%" }}
     >
-      <div style={{ height: "100%", position: "relative", background: "#000" }}>
-        {!current ? (
-          <div style={{ color: "#fff", padding: 16 }}>No media configured.</div>
-        ) : current.type === "video" ? (
-          <video
+      {/* Media title overlay */}
+      {current?.title && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            padding: "10px 16px",
+            background: "linear-gradient(180deg, rgba(0,0,0,0.6) 0%, transparent 100%)",
+            zIndex: 2,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <div
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: "#ff4d4f",
+              boxShadow: "0 0 6px #ff4d4f",
+              animation: "pulse 2s ease-in-out infinite",
+            }}
+          />
+          <span style={{ color: "rgba(255,255,255,0.85)", fontSize: 13, fontWeight: 500, letterSpacing: 0.3 }}>
+            {current.title}
+          </span>
+        </div>
+      )}
+
+      {!current ? (
+        <div
+          style={{
+            height: "100%",
+            display: "grid",
+            placeItems: "center",
+            color: "rgba(255,255,255,0.3)",
+            fontSize: 16,
+          }}
+        >
+          No media configured
+        </div>
+      ) : current.type === "video" ? (
+        <video
+          key={current.id}
+          ref={videoRef}
+          src={current.src}
+          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+          autoPlay
+          muted
+          playsInline
+          onEnded={next}
+          onError={next}
+        />
+      ) : current.type === "image" ? (
+        <>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
             key={current.id}
-            ref={videoRef}
             src={current.src}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            autoPlay
-            muted
-            playsInline
-            onEnded={next}
+            alt={current.title || ""}
+            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
             onError={next}
           />
-        ) : current.type === "image" ? (
-          <>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              key={current.id}
-              src={current.src}
-              alt={current.title || ""}
-              style={{ width: "100%", height: "100%", objectFit: "contain" }}
-              onError={next}
-            />
-            {effectiveDuration > 0 && (
-              <div style={{ position: "absolute", left: 12, right: 12, bottom: 10 }}>
-                <Progress percent={progressPct} showInfo={false} strokeColor="#1677ff" />
-              </div>
-            )}
-          </>
-        ) : youtubeId ? (
-          <>
+          {effectiveDuration > 0 && (
+            <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "rgba(255,255,255,0.1)" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${progressPct}%`,
+                  background: "linear-gradient(90deg, #3a87ad, #65b6d7)",
+                  transition: "width 1s linear",
+                }}
+              />
+            </div>
+          )}
+        </>
+      ) : youtubeId ? (
+        <>
+          <div
+            key={current.id}
+            ref={ytHostRef}
+            style={{ width: "100%", height: "100%", border: 0 }}
+          />
+          {useTimer && effectiveDuration > 0 && (
+            <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "rgba(255,255,255,0.1)" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${progressPct}%`,
+                  background: "linear-gradient(90deg, #3a87ad, #65b6d7)",
+                  transition: "width 1s linear",
+                }}
+              />
+            </div>
+          )}
+        </>
+      ) : (
+        <div
+          style={{
+            height: "100%",
+            display: "grid",
+            placeItems: "center",
+            color: "rgba(255,255,255,0.3)",
+            fontSize: 14,
+          }}
+        >
+          Invalid YouTube link ({current.src})
+        </div>
+      )}
+
+      {/* Playlist indicator dots */}
+      {items.length > 1 && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 10,
+            left: "50%",
+            transform: "translateX(-50%)",
+            display: "flex",
+            gap: 6,
+            zIndex: 2,
+          }}
+        >
+          {items.map((item, i) => (
             <div
-              key={current.id}
-              ref={ytHostRef}
-              style={{ width: "100%", height: "100%", border: 0 }}
+              key={item.id}
+              style={{
+                width: i === idx ? 18 : 6,
+                height: 6,
+                borderRadius: 3,
+                background: i === idx ? "#65b6d7" : "rgba(255,255,255,0.3)",
+                transition: "all 0.3s ease",
+              }}
             />
-            {useTimer && effectiveDuration > 0 && (
-              <div style={{ position: "absolute", left: 12, right: 12, bottom: 10 }}>
-                <Progress percent={progressPct} showInfo={false} strokeColor="#1677ff" />
-              </div>
-            )}
-          </>
-        ) : (
-          <div style={{ color: "#fff", padding: 16 }}>
-            Invalid YouTube link. ({current.src})
-          </div>
-        )}
-      </div>
-    </Card>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

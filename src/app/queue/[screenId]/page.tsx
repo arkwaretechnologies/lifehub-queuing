@@ -1,6 +1,8 @@
 import { QueueScreenClient } from "@/app/queue/[screenId]/QueueScreenClient";
 import type { MediaPlaylistItem, QueueScreen } from "@/config/types";
 import { supabaseServer } from "@/db/supabaseServer";
+import { collectScreenCounterCodesUpper } from "@/queue/displayCounters";
+import { formatTicketDateForQueue } from "@/queue/ticketDate";
 import type { QueueTicket } from "@/queue/types";
 
 type Counter = { id: string; code: string; name: string; description: string | null };
@@ -16,15 +18,15 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
     .eq("screen_id", screenId)
     .maybeSingle<QueueScreen>();
 
-  const counterCodes = Array.from(
-    new Set<string>([...(screen?.counter_codes ?? []), ...(screen?.entrance_counter_code ? [screen.entrance_counter_code] : [])]),
-  );
+  const wantedCounterCodes = collectScreenCounterCodesUpper(screen ?? null);
 
   const { data: countersRaw } = await supabase
     .from("queue_counters")
     .select("id, code, name, description")
-    .in("code", counterCodes);
-  const counters = (countersRaw ?? []) as Counter[];
+    .eq("is_active", true);
+  const counters = (countersRaw ?? [])
+    .filter((c) => wantedCounterCodes.has(String(c.code).toUpperCase()))
+    .map((c) => ({ ...c, id: String(c.id) })) as Counter[];
 
   const { data: prioritiesRaw } = await supabase
     .from("queue_priorities")
@@ -33,17 +35,21 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
   const priorities = (prioritiesRaw ?? []) as Priority[];
 
   const counterIds = counters.map((c) => c.id);
-  const today = new Date().toISOString().slice(0, 10);
+  const ticketDate = formatTicketDateForQueue(new Date());
   const { data: ticketsRaw } = await supabase
     .from("queue_tickets")
     .select(
       "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at",
     )
     .in("counter_id", counterIds.length ? counterIds : ["00000000-0000-0000-0000-000000000000"])
-    .eq("ticket_date", today)
+    .eq("ticket_date", ticketDate)
     .in("status", ["Waiting", "Called", "Serving"]);
 
-  const initialTickets = (ticketsRaw ?? []) as QueueTicket[];
+  const initialTickets = (ticketsRaw ?? []).map((t) => ({
+    ...(t as QueueTicket),
+    id: String((t as QueueTicket).id),
+    counter_id: String((t as QueueTicket).counter_id),
+  })) as QueueTicket[];
 
   let playlistItems: MediaPlaylistItem[] = [];
   let playlistLoop = true;

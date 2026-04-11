@@ -161,7 +161,7 @@ export default function Home() {
                 </div>
 
                 <Typography.Paragraph style={{ fontSize: 16, lineHeight: 1.6, flex: 1 }}>
-                  Live display for waiting patients. Shows current queue numbers for Entrance, Laboratory, Dr. Mark,
+                  Live display for waiting patients. Shows current queue numbers for Reception, Laboratory, Dr. Mark,
                   and Dr. Ralph with looping media/ads on the side.
                 </Typography.Paragraph>
 

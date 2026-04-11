@@ -1,6 +1,10 @@
 "use server";
 
+import type { QueueScreen } from "@/config/types";
 import { supabaseServer } from "@/db/supabaseServer";
+import { collectScreenCounterCodesUpper } from "@/queue/displayCounters";
+import { formatTicketDateForQueue } from "@/queue/ticketDate";
+import type { QueueTicket } from "@/queue/types";
 
 type QueueCounterRow = {
   id: string;
@@ -76,7 +80,7 @@ export async function issueQueueTicket({
   displayMode,
 }: IssueQueueTicketParams): Promise<IssuedQueueTicket> {
   const supabase = supabaseServer();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatTicketDateForQueue(new Date());
 
   const [{ data: counter, error: counterError }, { data: priority, error: priorityError }] =
     await Promise.all([
@@ -195,4 +199,43 @@ export async function issueQueueTicket({
 
   if (ticketError) throw new Error(ticketError.message);
   return ticket;
+}
+
+/** Service-role read for TV refresh (bypasses browser RLS on `queue_tickets`). */
+export async function refreshQueueTicketsForScreen(screenId: string): Promise<QueueTicket[]> {
+  const supabase = supabaseServer();
+
+  const { data: screen } = await supabase
+    .from("queue_screens")
+    .select("*")
+    .eq("screen_id", screenId)
+    .maybeSingle<QueueScreen>();
+
+  const wanted = collectScreenCounterCodesUpper(screen ?? null);
+  const { data: countersRaw } = await supabase
+    .from("queue_counters")
+    .select("id, code")
+    .eq("is_active", true);
+
+  const counterIds = (countersRaw ?? [])
+    .filter((c) => wanted.has(String(c.code).toUpperCase()))
+    .map((c) => String(c.id));
+
+  const ticketDate = formatTicketDateForQueue(new Date());
+  const { data: ticketsRaw, error } = await supabase
+    .from("queue_tickets")
+    .select(
+      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at",
+    )
+    .in("counter_id", counterIds.length ? counterIds : ["00000000-0000-0000-0000-000000000000"])
+    .eq("ticket_date", ticketDate)
+    .in("status", ["Waiting", "Called", "Serving"]);
+
+  if (error) throw new Error(error.message);
+
+  return (ticketsRaw ?? []).map((t) => ({
+    ...(t as QueueTicket),
+    id: String((t as QueueTicket).id),
+    counter_id: String((t as QueueTicket).counter_id),
+  })) as QueueTicket[];
 }

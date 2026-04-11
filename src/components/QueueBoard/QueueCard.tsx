@@ -1,98 +1,158 @@
 "use client";
 
-import { Card, Divider, Space, Tag, Typography } from "antd";
 import type { QueueCardModel } from "@/queue/types";
 
 const accentToColor: Record<QueueCardModel["accent"], string> = {
-  blue: "#1677ff",
-  green: "#52c41a",
-  gold: "#faad14",
-  purple: "#722ed1",
+  blue: "#3b82f6",
+  green: "#22c55e",
+  gold: "#eab308",
+  purple: "#a855f7",
 };
 
 export function QueueCard({ model }: { model: QueueCardModel }) {
   const accent = accentToColor[model.accent];
 
   return (
-    <Card
-      styles={{
-        header: { borderBottom: "none" },
-        body: { paddingTop: 8 },
+    <div
+      style={{
+        background: "rgba(255,255,255,0.04)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 12,
+        padding: "14px 18px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 0,
+        backdropFilter: "blur(8px)",
+        overflow: "hidden",
       }}
-      title={
-        <Space size={10}>
+    >
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div
             style={{
-              width: 10,
-              height: 10,
-              borderRadius: 999,
+              width: 12,
+              height: 12,
+              borderRadius: "50%",
               background: accent,
-              boxShadow: `0 0 0 4px ${accent}22`,
+              boxShadow: `0 0 12px ${accent}`,
+              flexShrink: 0,
             }}
           />
-          <Space orientation="vertical" size={0}>
-            <Typography.Text strong style={{ fontSize: 16 }}>
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: "clamp(1.125rem, 1.1rem + 0.9vw, 1.625rem)",
+                fontWeight: 800,
+                color: "#fff",
+                lineHeight: 1.15,
+                letterSpacing: 0.02,
+              }}
+            >
               {model.title}
-            </Typography.Text>
-            {model.subtitle ? (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            </div>
+            {model.subtitle && (
+              <div
+                style={{
+                  fontSize: "clamp(0.75rem, 0.7rem + 0.35vw, 0.875rem)",
+                  color: "rgba(255,255,255,0.4)",
+                  lineHeight: 1.35,
+                  letterSpacing: 0.25,
+                  marginTop: 2,
+                }}
+              >
                 {model.subtitle}
-              </Typography.Text>
-            ) : null}
-          </Space>
-        </Space>
-      }
-    >
-      <div style={{ display: "grid", gridTemplateRows: "auto auto 1fr", gap: 10, height: "100%" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-            NOW SERVING
-          </Tag>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Next: {model.nextUp.length}
-          </Typography.Text>
-        </div>
-
-        <div style={{ lineHeight: 1 }}>
-          <Typography.Text
-            style={{
-              fontSize: 46,
-              fontWeight: 800,
-              letterSpacing: 1,
-              color: model.nowServing ? "inherit" : "rgba(0,0,0,0.35)",
-            }}
-          >
-            {model.nowServing ?? "—"}
-          </Typography.Text>
-        </div>
-
-        <div style={{ minHeight: 0 }}>
-          <Divider style={{ margin: "8px 0" }} />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            NEXT UP
-          </Typography.Text>
-          <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
-            {model.nextUp.length ? (
-              model.nextUp.map((item) => (
-                <div
-                  key={item}
-                  style={{
-                    padding: "6px 0",
-                    borderBottom: "1px solid rgba(5, 5, 5, 0.06)",
-                  }}
-                >
-                  <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>{item}</Typography.Text>
-                </div>
-              ))
-            ) : (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                —
-              </Typography.Text>
+              </div>
             )}
           </div>
         </div>
+        {model.nextUp.length > 0 && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "rgba(255,255,255,0.3)",
+              background: "rgba(255,255,255,0.06)",
+              padding: "2px 8px",
+              borderRadius: 10,
+              fontWeight: 500,
+            }}
+          >
+            {model.nextUp.length} waiting
+          </div>
+        )}
       </div>
-    </Card>
+
+      {/* Now Serving - hero area */}
+      <div
+        style={{
+          flex: 1,
+          background: `linear-gradient(135deg, ${accent}15, ${accent}08)`,
+          border: `1px solid ${accent}25`,
+          borderRadius: 10,
+          padding: "12px 16px",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          minHeight: 0,
+        }}
+      >
+        <div style={{ fontSize: 10, fontWeight: 700, color: accent, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4 }}>
+          Now Serving
+        </div>
+        <div
+          style={{
+            fontSize: 48,
+            fontWeight: 800,
+            color: model.nowServing ? "#fff" : "rgba(255,255,255,0.12)",
+            lineHeight: 1,
+            letterSpacing: 2,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {model.nowServing ?? "—"}
+        </div>
+      </div>
+
+      {/* Next Up */}
+      {model.nextUp.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.3)", letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 6 }}>
+            Next Up
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {model.nextUp.slice(0, 5).map((item) => (
+              <div
+                key={item}
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: "rgba(255,255,255,0.5)",
+                  background: "rgba(255,255,255,0.05)",
+                  padding: "3px 10px",
+                  borderRadius: 6,
+                  fontVariantNumeric: "tabular-nums",
+                  border: "1px solid rgba(255,255,255,0.06)",
+                }}
+              >
+                {item}
+              </div>
+            ))}
+            {model.nextUp.length > 5 && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "rgba(255,255,255,0.2)",
+                  padding: "3px 8px",
+                  alignSelf: "center",
+                }}
+              >
+                +{model.nextUp.length - 5}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

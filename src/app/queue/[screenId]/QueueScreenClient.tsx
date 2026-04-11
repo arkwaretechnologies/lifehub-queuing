@@ -9,7 +9,7 @@ import { StatusBar } from "@/components/StatusBar/StatusBar";
 import { MediaPanel } from "@/components/MediaPanel/MediaPanel";
 import { buildQueueCard } from "@/queue/buildCards";
 import { isSupabaseBrowserConfigured, supabaseBrowser } from "@/db/supabaseBrowser";
-import { resolveEntranceCounterCode } from "@/queue/displayCounters";
+import { resolveEntranceCounterCode, resolveLaboratoryCounterCode } from "@/queue/displayCounters";
 import { refreshQueueTicketsForScreen } from "@/queue/issueTicket";
 
 type Counter = { id: string; code: string; name: string; description: string | null };
@@ -217,8 +217,22 @@ export function QueueScreenClient({
         ]
       : entranceTickets;
 
+    const labCode = resolveLaboratoryCounterCode(screen, counters);
+    const labCounterId = labCode
+      ? (counterIdByCode.get(labCode) ?? counterIdByCode.get(labCode.toUpperCase()) ?? null)
+      : null;
+    const labTickets = labCounterId ? (byCounterId.get(labCounterId) ?? []) : [];
+    const labMeta = labCode ? counters.find((c) => c.code.toUpperCase() === labCode.toUpperCase()) : null;
+
+    const entranceUpper = entranceCode?.toUpperCase() ?? "";
+    const labUpper = labCode?.toUpperCase() ?? "";
+
     const configuredCounterCodes = screen?.counter_codes ?? [];
     const other = configuredCounterCodes
+      .filter((code) => {
+        const u = code.toUpperCase();
+        return u !== entranceUpper && u !== labUpper;
+      })
       .map((code) => {
         const id = counterIdByCode.get(code) ?? counterIdByCode.get(code.toUpperCase());
         if (!id) return null;
@@ -232,8 +246,8 @@ export function QueueScreenClient({
       })
       .filter(Boolean) as { code: string; title: string; subtitle?: string; tickets: QueueTicket[] }[];
 
-    // Build exactly 4 cards for the TV: Reception (split), Lab, Dr Mark, Dr Ralph.
-    // If admin config provides only 3 counters, we’ll still render 4 cards with placeholders.
+    // Build exactly 4 cards for the TV: Reception (split), Lab (resolved like reception), Dr Mark, Dr Ralph.
+    // If admin config provides only 2 doctor counters, we’ll still render 4 cards with placeholders.
     const entranceCard = {
       title: "Reception",
       subtitle: "Registration Queue",
@@ -241,14 +255,17 @@ export function QueueScreenClient({
       tickets: entranceTicketsForCard,
       nextLimit: 6,
     };
-    const lab = other[0]
-      ? { ...other[0], accent: "green" as const }
-      : { title: "Laboratory", subtitle: "Collection", tickets: [], accent: "green" as const };
-    const drMark = other[1]
-      ? { ...other[1], accent: "gold" as const }
+    const lab = {
+      title: labMeta?.name ?? "Laboratory",
+      subtitle: labMeta?.description ?? "Collection",
+      tickets: labTickets,
+      accent: "green" as const,
+    };
+    const drMark = other[0]
+      ? { ...other[0], accent: "gold" as const }
       : { title: "Dr. Mark", subtitle: "Doctor", tickets: [], accent: "gold" as const };
-    const drRalph = other[2]
-      ? { ...other[2], accent: "purple" as const }
+    const drRalph = other[1]
+      ? { ...other[1], accent: "purple" as const }
       : { title: "Dr. Ralph", subtitle: "Doctor", tickets: [], accent: "purple" as const };
 
     return [

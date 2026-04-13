@@ -2,6 +2,7 @@
 
 
 import { supabaseServer } from "@/db/supabaseServer";
+import { nowIsoWithOffset } from "@/queue/nowIso";
 import { formatTicketDateForQueue } from "@/queue/ticketDate";
 import type { QueueTicket } from "@/queue/types";
 
@@ -113,7 +114,10 @@ export async function issueQueueTicket({
   session = existingSession;
 
   if (!session) {
-    const openedAt = new Date().toISOString();
+    const openedAt = nowIsoWithOffset(
+      (typeof process !== "undefined" ? process.env.NEXT_PUBLIC_QUEUE_TICKET_DATE_TZ : undefined) ??
+        "Asia/Manila",
+    );
     const { data: createdSession, error: createSessionError } = await supabase
       .from("queue_sessions")
       .insert({
@@ -171,7 +175,10 @@ export async function issueQueueTicket({
 
   const nextNumber = (lastIssuedTicket?.queue_number ?? 0) + 1;
   const displayNumber = (displayCount ?? 0) + 1;
-  const issuedAt = new Date().toISOString();
+  const issuedAt = nowIsoWithOffset(
+    (typeof process !== "undefined" ? process.env.NEXT_PUBLIC_QUEUE_TICKET_DATE_TZ : undefined) ??
+      "Asia/Manila",
+  );
   const displayPrefix = displayMode === "priority" ? getPriorityPrefix(priority) : getCounterPrefix(counter);
 
   const { error: updateSessionError } = await supabase

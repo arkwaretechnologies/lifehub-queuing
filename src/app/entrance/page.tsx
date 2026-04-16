@@ -15,6 +15,8 @@ const FALLBACK_PRIORITY_PRIORITY_CODE = "PRI";
 export default function EntrancePage() {
   const [issuing, setIssuing] = useState<"REG" | "PRI" | null>(null);
   const [msgApi, contextHolder] = message.useMessage();
+  /** False until counter/priority codes are resolved from the API (avoids sending stale fallbacks like REG before load). */
+  const [configReady, setConfigReady] = useState(false);
 
   const [counterCode, setCounterCode] = useState<string>(FALLBACK_COUNTER_CODE);
   const [regularPriorityCode, setRegularPriorityCode] = useState<string>(FALLBACK_REGULAR_PRIORITY_CODE);
@@ -63,6 +65,8 @@ export default function EntrancePage() {
         }
       } catch {
         // ignore and keep fallbacks
+      } finally {
+        if (!cancelled) setConfigReady(true);
       }
     })();
     return () => {
@@ -75,7 +79,7 @@ export default function EntrancePage() {
   }, [counterCode, regularPriorityCode, priorityPriorityCode]);
 
   async function issue(priorityCode: "REG" | "PRI") {
-    if (issuing) return;
+    if (issuing || !configReady) return;
     try {
       setIssuing(priorityCode);
       const res = await fetch("/api/entrance/issue", {
@@ -166,16 +170,16 @@ export default function EntrancePage() {
         {/* Regular */}
         <button
           type="button"
-          onClick={issuing ? undefined : () => issue("REG")}
-          disabled={!!issuing && issuing !== "REG"}
+          onClick={issuing || !configReady ? undefined : () => issue("REG")}
+          disabled={!configReady || (!!issuing && issuing !== "REG")}
           style={{
             flex: "1 1 380px",
             maxWidth: 440,
             minHeight: 280,
             border: "none",
             borderRadius: 28,
-            cursor: issuing ? "not-allowed" : "pointer",
-            opacity: issuing && issuing !== "REG" ? 0.5 : 1,
+            cursor: !configReady || issuing ? "not-allowed" : "pointer",
+            opacity: !configReady || (issuing && issuing !== "REG") ? 0.5 : 1,
             background: "linear-gradient(145deg, #3b82f6, #1d4ed8)",
             boxShadow: "0 12px 40px rgba(59, 130, 246, 0.35)",
             color: "#fff",
@@ -205,23 +209,23 @@ export default function EntrancePage() {
             Regular
           </span>
           <span style={{ fontSize: 16, opacity: 0.85, fontWeight: 500 }}>
-            {issuing === "REG" ? "Printing…" : "Tap to get your number"}
+            {!configReady ? "Loading…" : issuing === "REG" ? "Printing…" : "Tap to get your number"}
           </span>
         </button>
 
         {/* Priority */}
         <button
           type="button"
-          onClick={issuing ? undefined : () => issue("PRI")}
-          disabled={!!issuing && issuing !== "PRI"}
+          onClick={issuing || !configReady ? undefined : () => issue("PRI")}
+          disabled={!configReady || (!!issuing && issuing !== "PRI")}
           style={{
             flex: "1 1 380px",
             maxWidth: 440,
             minHeight: 280,
             border: "none",
             borderRadius: 28,
-            cursor: issuing ? "not-allowed" : "pointer",
-            opacity: issuing && issuing !== "PRI" ? 0.5 : 1,
+            cursor: !configReady || issuing ? "not-allowed" : "pointer",
+            opacity: !configReady || (issuing && issuing !== "PRI") ? 0.5 : 1,
             background: "linear-gradient(145deg, #f59e0b, #d97706)",
             boxShadow: "0 12px 40px rgba(245, 158, 11, 0.35)",
             color: "#fff",
@@ -251,7 +255,7 @@ export default function EntrancePage() {
             Priority
           </span>
           <span style={{ fontSize: 16, opacity: 0.85, fontWeight: 500 }}>
-            {issuing === "PRI" ? "Printing…" : "Senior / PWD / Pregnant"}
+            {!configReady ? "Loading…" : issuing === "PRI" ? "Printing…" : "Senior / PWD / Pregnant"}
           </span>
         </button>
       </div>

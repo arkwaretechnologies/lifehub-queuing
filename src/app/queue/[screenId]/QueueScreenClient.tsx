@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MediaPlaylistItem, QueueScreen } from "@/config/types";
 import type { QueueAccent, QueueTicket } from "@/queue/types";
 import { QueueBoard } from "@/components/QueueBoard/QueueBoard";
@@ -69,6 +69,8 @@ export function QueueScreenClient({
 }) {
   const [connected, setConnected] = useState(false);
   const [tickets, setTickets] = useState<QueueTicket[]>(initialTickets);
+  const lastTicketSnapshotRef = useRef<Map<string, { status: string; called_at: string | null }>>(new Map());
+  const lastSpokenKeyRef = useRef<string | null>(null);
 
   const counterIdByCode = useMemo(() => {
     const m = new Map<string, string>();
@@ -76,6 +78,16 @@ export function QueueScreenClient({
       const id = String(c.id);
       m.set(c.code, id);
       m.set(c.code.toUpperCase(), id);
+    });
+    return m;
+  }, [counters]);
+
+  const counterLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    counters.forEach((c) => {
+      const id = String(c.id);
+      const title = (c.name ?? "").trim() || c.code;
+      m.set(id, title);
     });
     return m;
   }, [counters]);
@@ -188,6 +200,49 @@ export function QueueScreenClient({
       window.clearInterval(id);
     };
   }, [screenId, counterWatchKey]);
+
+  // Voice announcement on "Called" transitions (TV screen only).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!("speechSynthesis" in window)) return;
+
+    // Find the most recent "Called" ticket (by called_at), and announce it only if it's newly called.
+    const called = tickets
+      .filter((t) => t.status === "Called" && !!t.called_at)
+      .slice()
+      .sort((a, b) => String(b.called_at).localeCompare(String(a.called_at)));
+    const latest = called[0] ?? null;
+    if (!latest?.called_at) return;
+
+    const prev = lastTicketSnapshotRef.current.get(latest.id);
+    const becameCalled = prev?.status !== "Called" || prev?.called_at !== latest.called_at;
+    const speakKey = `${latest.id}:${latest.called_at}`;
+    if (!becameCalled) return;
+    if (lastSpokenKeyRef.current === speakKey) return;
+
+    const counterLabel = counterLabelById.get(latest.counter_id) ?? "the counter";
+    const text = `Now serving ${latest.queue_display}. Please proceed to ${counterLabel}.`;
+
+    try {
+      // Avoid overlap when multiple updates arrive.
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1;
+      u.pitch = 1;
+      u.volume = 1;
+      window.speechSynthesis.speak(u);
+      lastSpokenKeyRef.current = speakKey;
+    } catch {
+      // ignore speech errors
+    }
+  }, [tickets, counterLabelById]);
+
+  // Maintain a minimal snapshot for transition detection.
+  useEffect(() => {
+    const snap = new Map<string, { status: string; called_at: string | null }>();
+    tickets.forEach((t) => snap.set(t.id, { status: t.status, called_at: t.called_at }));
+    lastTicketSnapshotRef.current = snap;
+  }, [tickets]);
 
   const cards = useMemo(() => {
     const byCounterId = new Map<string, QueueTicket[]>();

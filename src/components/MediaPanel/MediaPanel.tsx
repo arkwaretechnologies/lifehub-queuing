@@ -99,6 +99,14 @@ export function MediaPanel({ items, loop }: Props) {
         // ignore
       } finally {
         ytPlayerRef.current = null;
+        // The YouTube player mutates the DOM (inserts/removes an <iframe> inside our host).
+        // When React is simultaneously reconciling (especially during HMR), we can end up with
+        // a double-removal attempt. Clearing the host makes teardown deterministic.
+        try {
+          ytHostRef.current?.replaceChildren();
+        } catch {
+          // ignore
+        }
       }
     }
 
@@ -295,7 +303,6 @@ export function MediaPanel({ items, loop }: Props) {
       ) : youtubeId ? (
         <>
           <div
-            key={current.id}
             ref={ytHostRef}
             style={{ width: "100%", height: "100%", border: 0 }}
           />

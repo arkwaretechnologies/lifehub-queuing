@@ -170,10 +170,11 @@ export async function printTicket(
     const chunks = chunkBytes(bytes);
 
     for (const part of chunks) {
+      const buf = part as BufferSource;
       if (ch.properties.writeWithoutResponse) {
-        await ch.writeValueWithoutResponse(part);
+        await ch.writeValueWithoutResponse(buf);
       } else {
-        await ch.writeValue(part);
+        await ch.writeValue(buf);
       }
     }
 

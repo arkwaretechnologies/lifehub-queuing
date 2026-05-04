@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import AntdRegistry from "@/components/AntdRegistry";
@@ -59,7 +60,9 @@ export default function RootLayout({
             wave={{ disabled: true }}
           >
             <AntdApp>
-              <RouteLoaderProvider>{children}</RouteLoaderProvider>
+              <Suspense fallback={null}>
+                <RouteLoaderProvider>{children}</RouteLoaderProvider>
+              </Suspense>
             </AntdApp>
           </ConfigProvider>
         </AntdRegistry>

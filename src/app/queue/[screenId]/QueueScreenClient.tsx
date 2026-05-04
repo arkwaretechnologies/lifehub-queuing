@@ -15,6 +15,9 @@ type Counter = { id: string; code: string; name: string; description: string | n
 type Priority = { id: number; code: string; name: string; level: number };
 const ACTIVE_STATUSES = ["Waiting", "Called", "Serving", "Completed"] as const;
 
+/** Server action refresh interval; Realtime is primary—this is a backup only. */
+const QUEUE_TICKET_POLL_MS = 20_000;
+
 const SERVICE_ACCENTS: QueueAccent[] = ["gold", "purple", "red", "cyan", "orange", "pink"];
 
 type QueueTicketRow = {
@@ -192,7 +195,7 @@ export function QueueScreenClient({
       }
     };
 
-    const id = window.setInterval(refresh, 6_000);
+    const id = window.setInterval(refresh, QUEUE_TICKET_POLL_MS);
     void refresh();
 
     return () => {
@@ -201,12 +204,11 @@ export function QueueScreenClient({
     };
   }, [screenId, counterWatchKey]);
 
-  // Voice announcement on "Called" transitions (TV screen only).
+  // Voice announcement on "Called" transitions (browser speech synthesis).
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!("speechSynthesis" in window)) return;
 
-    // Find the most recent "Called" ticket (by called_at), and announce it only if it's newly called.
     const called = tickets
       .filter((t) => t.status === "Called" && !!t.called_at)
       .slice()
@@ -224,7 +226,6 @@ export function QueueScreenClient({
     const text = `Now serving ${latest.queue_display}. Please proceed to ${counterLabel}.`;
 
     try {
-      // Avoid overlap when multiple updates arrive.
       window.speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.rate = 1;
@@ -233,7 +234,7 @@ export function QueueScreenClient({
       window.speechSynthesis.speak(u);
       lastSpokenKeyRef.current = speakKey;
     } catch {
-      // ignore speech errors
+      /* ignore speech errors */
     }
   }, [tickets, counterLabelById]);
 

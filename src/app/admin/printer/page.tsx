@@ -44,6 +44,7 @@ export default function AdminPrinterPage() {
   const [settings, setSettings] = useState<PrinterSettings | null>(null);
   const [pairing, setPairing] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [pairError, setPairError] = useState<{ title: string; details?: string } | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -100,6 +101,36 @@ export default function AdminPrinterPage() {
   const preview = Form.useWatch([], form);
   const bluetoothOk = useMemo(() => isBluetoothSupported(), []);
   const pairedName = Form.useWatch("printer_name", form) as string | null | undefined;
+
+  function normalizePairError(e: unknown): { title: string; details?: string } {
+    const details = e instanceof Error ? e.message : typeof e === "string" ? e : undefined;
+
+    if (details?.includes("Invalid Service name")) {
+      return {
+        title: "Bluetooth printer pairing failed (invalid service UUID)",
+        details,
+      };
+    }
+
+    if (details?.toLowerCase().includes("notfounderror") || details?.toLowerCase().includes("user cancelled")) {
+      return {
+        title: "Pairing was cancelled",
+        details,
+      };
+    }
+
+    if (details?.toLowerCase().includes("securityerror")) {
+      return {
+        title: "Bluetooth permission denied",
+        details,
+      };
+    }
+
+    return {
+      title: "Bluetooth printer pairing failed",
+      details,
+    };
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: "#f5f5f5" }}>
@@ -291,6 +322,28 @@ export default function AdminPrinterPage() {
                       style={{ marginBottom: 16 }}
                     />
                   )}
+                  {bluetoothOk && pairError && (
+                    <Alert
+                      type="error"
+                      showIcon
+                      closable
+                      onClose={() => setPairError(null)}
+                      message={pairError.title}
+                      description={
+                        pairError.details ? (
+                          <Typography.Paragraph
+                            style={{ marginBottom: 0 }}
+                            type="secondary"
+                            copyable={{ text: pairError.details }}
+                            ellipsis={{ rows: 3, expandable: true }}
+                          >
+                            {pairError.details}
+                          </Typography.Paragraph>
+                        ) : null
+                      }
+                      style={{ marginBottom: 16 }}
+                    />
+                  )}
 
                   <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
                     <Button
@@ -299,12 +352,15 @@ export default function AdminPrinterPage() {
                       disabled={!bluetoothOk}
                       onClick={async () => {
                         setPairing(true);
+                        setPairError(null);
                         try {
                           const name = await pairPrinter();
                           form.setFieldValue("printer_name", name);
                           msgApi.success(`Paired: ${name}`);
                         } catch (e) {
-                          msgApi.error(e instanceof Error ? e.message : "Pairing failed");
+                          const norm = normalizePairError(e);
+                          setPairError(norm);
+                          msgApi.error(norm.title);
                         } finally {
                           setPairing(false);
                         }

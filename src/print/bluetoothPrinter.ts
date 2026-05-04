@@ -11,8 +11,8 @@ export type TicketLike = {
 // Common BLE services used by many thermal printers
 const SERVICE_UUIDS: BluetoothServiceUUID[] = [
   0x18f0, // many generic BLE thermal printers
-  "E7810A71-73AE-499D-8C15-FAA9AEF0C3F2", // common thermal service
-  "49535343-FE7D-4AE5-8FA9-9FAFD205E455", // common UART-like service
+  "e7810a71-73ae-499d-8c15-faa9aef0c3f2", // common thermal service
+  "49535343-fe7d-4ae5-8fa9-9fafd205e455", // common UART-like service
 ];
 
 function textEncoder() {

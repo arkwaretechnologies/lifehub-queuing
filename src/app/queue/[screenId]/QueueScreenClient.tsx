@@ -10,6 +10,7 @@ import { buildQueueCard } from "@/queue/buildCards";
 import { isSupabaseBrowserConfigured, supabaseBrowser } from "@/db/supabaseBrowser";
 import { resolveEntranceCounterCode, resolveLaboratoryCounterCode, resolveServiceCounters } from "@/queue/displayCounters";
 import { refreshQueueTicketsForScreen } from "@/queue/issueTicket";
+import { cancelAnnouncement, formatQueueForSpeech, speakAnnouncement } from "@/queue/announceClient";
 
 type Counter = { id: string; code: string; name: string; description: string | null };
 type Priority = { id: number; code: string; name: string; level: number };
@@ -204,10 +205,10 @@ export function QueueScreenClient({
     };
   }, [screenId, counterWatchKey]);
 
-  // Voice announcement on "Called" transitions (browser speech synthesis).
+  // Voice announcement on "Called" transitions (ElevenLabs via /api/tts/announce
+  // with a SpeechSynthesis fallback handled inside speakAnnouncement).
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!("speechSynthesis" in window)) return;
 
     const called = tickets
       .filter((t) => t.status === "Called" && !!t.called_at)
@@ -223,20 +224,23 @@ export function QueueScreenClient({
     if (lastSpokenKeyRef.current === speakKey) return;
 
     const counterLabel = counterLabelById.get(latest.counter_id) ?? "the counter";
-    const text = `Now serving ${latest.queue_display}. Please proceed to ${counterLabel}.`;
+    const spokenQueue = formatQueueForSpeech(latest.queue_display);
+    const englishText = `Now serving ${spokenQueue}. Please proceed to ${counterLabel}.`;
+    const bisayaText = `Numero ${spokenQueue}. Palihug adto sa ${counterLabel}.`;
 
-    try {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.rate = 1;
-      u.pitch = 1;
-      u.volume = 1;
-      window.speechSynthesis.speak(u);
-      lastSpokenKeyRef.current = speakKey;
-    } catch {
-      /* ignore speech errors */
-    }
+    speakAnnouncement([
+      { text: englishText, voice: "primary" },
+      { text: bisayaText, voice: "bisaya" },
+    ]);
+    lastSpokenKeyRef.current = speakKey;
   }, [tickets, counterLabelById]);
+
+  // Stop any in-flight announcement when the screen unmounts.
+  useEffect(() => {
+    return () => {
+      cancelAnnouncement();
+    };
+  }, []);
 
   // Maintain a minimal snapshot for transition detection.
   useEffect(() => {

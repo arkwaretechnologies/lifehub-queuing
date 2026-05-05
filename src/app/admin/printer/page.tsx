@@ -31,7 +31,9 @@ import type { PrinterSettings } from "@/config/types";
 import {
   isBluetoothSupported,
   pairPrinter,
+  runtimeDiagnostics,
   testPrint as btTestPrint,
+  type PrinterDiagnostics,
 } from "@/print/bluetoothPrinter";
 
 export default function AdminPrinterPage() {
@@ -45,6 +47,7 @@ export default function AdminPrinterPage() {
   const [pairing, setPairing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [pairError, setPairError] = useState<{ title: string; details?: string } | null>(null);
+  const [diagnostics, setDiagnostics] = useState<PrinterDiagnostics | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -101,6 +104,24 @@ export default function AdminPrinterPage() {
   const preview = Form.useWatch([], form);
   const bluetoothOk = useMemo(() => isBluetoothSupported(), []);
   const pairedName = Form.useWatch("printer_name", form) as string | null | undefined;
+  const pairedId = Form.useWatch("printer_id", form) as string | null | undefined;
+
+  const refreshDiagnostics = useCallback(async () => {
+    if (!bluetoothOk) {
+      setDiagnostics(null);
+      return;
+    }
+    if (!pairedId && !pairedName) {
+      setDiagnostics(null);
+      return;
+    }
+    const d = await runtimeDiagnostics({ printer_id: pairedId, printer_name: pairedName });
+    setDiagnostics(d);
+  }, [bluetoothOk, pairedId, pairedName]);
+
+  useEffect(() => {
+    refreshDiagnostics();
+  }, [refreshDiagnostics]);
 
   function normalizePairError(e: unknown): { title: string; details?: string } {
     const details = e instanceof Error ? e.message : typeof e === "string" ? e : undefined;
@@ -302,7 +323,7 @@ export default function AdminPrinterPage() {
                 >
                   {!bluetoothOk && (
                     <Alert
-                      message="Bluetooth not supported"
+                      title="Bluetooth not supported"
                       description={
                         <>
                           This browser/device does not support Web Bluetooth. If you&apos;re on iPad/iOS, Web Bluetooth is not available in Safari.
@@ -316,9 +337,29 @@ export default function AdminPrinterPage() {
                   )}
                   {bluetoothOk && pairedName && (
                     <Alert
-                      message={`Printer paired: ${pairedName}`}
+                      title={`Printer paired: ${pairedName}`}
                       type="success"
                       showIcon
+                      style={{ marginBottom: 16 }}
+                    />
+                  )}
+                  {bluetoothOk && (pairedId || pairedName) && diagnostics && !diagnostics.found && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      title="Browser can't see the saved printer right now"
+                      description={
+                        <>
+                          <Typography.Paragraph style={{ marginBottom: 8 }}>
+                            {diagnostics.hint ??
+                              "The kiosk won't be able to print silently until the browser can see this device."}
+                          </Typography.Paragraph>
+                          <Typography.Paragraph style={{ marginBottom: 0, fontSize: 12 }} type="secondary">
+                            On Android Chrome: open <Typography.Text code>chrome://flags/#enable-web-bluetooth-new-permissions-backend</Typography.Text>,
+                            set it to <Typography.Text strong>Enabled</Typography.Text>, restart Chrome, then re-pair the printer below.
+                          </Typography.Paragraph>
+                        </>
+                      }
                       style={{ marginBottom: 16 }}
                     />
                   )}
@@ -328,7 +369,7 @@ export default function AdminPrinterPage() {
                       showIcon
                       closable
                       onClose={() => setPairError(null)}
-                      message={pairError.title}
+                      title={pairError.title}
                       description={
                         pairError.details ? (
                           <Typography.Paragraph
@@ -354,9 +395,46 @@ export default function AdminPrinterPage() {
                         setPairing(true);
                         setPairError(null);
                         try {
-                          const name = await pairPrinter();
-                          form.setFieldValue("printer_name", name);
-                          msgApi.success(`Paired: ${name}`);
+                          const paired = await pairPrinter();
+                          form.setFieldValue("printer_name", paired.name);
+                          form.setFieldValue("printer_id", paired.id);
+                          // Persist pairing immediately so entrance kiosk can print
+                          // even if the operator forgets to click Save Changes.
+                          let persisted = false;
+                          try {
+                            const saveRes = await fetch("/api/config/printer", {
+                              method: "PATCH",
+                              headers: { "content-type": "application/json" },
+                              body: JSON.stringify({
+                                printer_name: paired.name,
+                                printer_id: paired.id,
+                              }),
+                            });
+                            if (saveRes.ok) {
+                              const updated = (await saveRes.json()) as PrinterSettings;
+                              setSettings(updated);
+                              form.setFieldsValue(updated);
+                              persisted = true;
+                            } else {
+                              const legacyRes = await fetch("/api/config/printer", {
+                                method: "PATCH",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({
+                                  printer_name: paired.name,
+                                }),
+                              });
+                              if (legacyRes.ok) {
+                                const updated = (await legacyRes.json()) as PrinterSettings;
+                                setSettings(updated);
+                                form.setFieldsValue(updated);
+                                persisted = true;
+                              }
+                            }
+                          } catch {
+                            // Keep paired values in form even if persistence fails.
+                          }
+                          msgApi.success(persisted ? `Paired and saved: ${paired.name}` : `Paired: ${paired.name}`);
+                          refreshDiagnostics();
                         } catch (e) {
                           const norm = normalizePairError(e);
                           setPairError(norm);
@@ -370,20 +448,26 @@ export default function AdminPrinterPage() {
                     </Button>
                     <Button
                       loading={testing}
-                      disabled={!bluetoothOk || !pairedName}
+                      disabled={!bluetoothOk || (!pairedName && !pairedId)}
                       onClick={async () => {
                         const current = (await form.validateFields().catch(() => null)) as Partial<PrinterSettings> | null;
                         if (!current) return;
                         setTesting(true);
                         try {
-                          const ok = await btTestPrint(pairedName as string, {
+                          const merged = {
                             ...(settings ?? current),
                             ...(current as PrinterSettings),
-                          } as PrinterSettings);
-                          if (ok) msgApi.success("Test print sent");
-                          else msgApi.warning("Test print failed (will fall back to browser print)");
-                        } catch {
-                          msgApi.error("Test print failed");
+                          } as PrinterSettings;
+                          const result = await btTestPrint(
+                            { printer_id: pairedId, printer_name: pairedName },
+                            merged,
+                          );
+                          if (result.ok) {
+                            msgApi.success("Test print sent");
+                          } else {
+                            msgApi.error(`Test print failed: ${result.error}`);
+                          }
+                          refreshDiagnostics();
                         } finally {
                           setTesting(false);
                         }
@@ -399,6 +483,9 @@ export default function AdminPrinterPage() {
                     extra="For Bluetooth: click Pair Printer, then Save Changes. For USB/system printer: leave empty and the app will use the browser print dialog."
                   >
                     <Input placeholder="(paired device name)" />
+                  </Form.Item>
+                  <Form.Item name="printer_id" hidden>
+                    <Input />
                   </Form.Item>
                 </Card>
               </Col>

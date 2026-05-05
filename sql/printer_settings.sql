@@ -14,3 +14,13 @@ create table if not exists public.printer_settings (
   updated_at timestamptz not null default now()
 );
 
+-- Bluetooth printer identification: the device name is shown to the operator,
+-- the device id is the stable handle used by navigator.bluetooth.getDevices().
+-- Some BLE thermal printers advertise an empty/changing name, so we match by
+-- id first and fall back to name.
+alter table public.printer_settings
+  add column if not exists printer_name text null;
+
+alter table public.printer_settings
+  add column if not exists printer_id text null;
+

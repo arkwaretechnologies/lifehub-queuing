@@ -23,6 +23,7 @@ const FALLBACK: PrinterSettings = {
   auto_print_delay_ms: 250,
   font_size_number: 40,
   printer_name: null,
+  printer_id: null,
   updated_at: "",
 };
 
@@ -63,12 +64,12 @@ export default function PrintTicketPage({ params }: { params: Promise<{ ticketId
   })();
 
   const trySilentPrint = useCallback(async () => {
-    if (!cfg.printer_name) {
+    if (!cfg.printer_name && !cfg.printer_id) {
       window.print();
       return;
     }
-    const ok = await btPrintTicket(
-      cfg.printer_name,
+    const result = await btPrintTicket(
+      { printer_id: cfg.printer_id, printer_name: cfg.printer_name },
       {
         queue_display: ticket?.queue_display ?? "—",
         issued_at: ticket?.issued_at,
@@ -76,8 +77,8 @@ export default function PrintTicketPage({ params }: { params: Promise<{ ticketId
       },
       cfg,
     );
-    if (!ok) window.print();
-  }, [cfg.printer_name, ticket?.issued_at, ticket?.queue_display, ticket?.ticket_date, cfg]);
+    if (!result.ok) window.print();
+  }, [cfg, ticket?.issued_at, ticket?.queue_display, ticket?.ticket_date]);
 
   useEffect(() => {
     if (!ticket || !cfg.auto_print) return;

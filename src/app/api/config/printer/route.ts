@@ -15,8 +15,17 @@ const DEFAULTS = {
   auto_print_delay_ms: 250,
   font_size_number: 40,
   printer_name: null,
+  printer_id: null,
   updated_at: new Date().toISOString(),
 };
+
+function shouldRetryWithoutPrinterId(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    (lower.includes("printer_id") && lower.includes("schema cache")) ||
+    (lower.includes("column") && lower.includes("printer_id"))
+  );
+}
 
 export async function GET() {
   const supabase = supabaseServer();
@@ -33,7 +42,7 @@ export async function GET() {
     return new NextResponse(error.message, { status: 500 });
   }
 
-  return NextResponse.json(data ?? DEFAULTS);
+  return NextResponse.json({ ...DEFAULTS, ...(data ?? {}) });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -50,6 +59,7 @@ export async function PATCH(req: NextRequest) {
     auto_print_delay_ms: true,
     font_size_number: true,
     printer_name: true,
+    printer_id: true,
   };
 
   const updates: Record<string, unknown> = {};
@@ -69,22 +79,30 @@ export async function PATCH(req: NextRequest) {
     .eq("id", SETTINGS_ID)
     .maybeSingle();
 
-  if (!existing) {
-    const { data, error } = await supabase
+  const runPatch = async (candidateUpdates: Record<string, unknown>) => {
+    if (!existing) {
+      return supabase
+        .from("printer_settings")
+        .insert({ ...DEFAULTS, ...candidateUpdates, id: SETTINGS_ID })
+        .select("*")
+        .single();
+    }
+    return supabase
       .from("printer_settings")
-      .insert({ ...DEFAULTS, ...updates, id: SETTINGS_ID })
+      .update(candidateUpdates)
+      .eq("id", SETTINGS_ID)
       .select("*")
       .single();
-    if (error) return new NextResponse(error.message, { status: 500 });
-    return NextResponse.json(data);
+  };
+
+  let { data, error } = await runPatch(updates);
+
+  if (error && shouldRetryWithoutPrinterId(error.message) && "printer_id" in updates) {
+    const legacyUpdates = { ...updates };
+    delete legacyUpdates.printer_id;
+    ({ data, error } = await runPatch(legacyUpdates));
   }
 
-  const { data, error } = await supabase
-    .from("printer_settings")
-    .update(updates)
-    .eq("id", SETTINGS_ID)
-    .select("*")
-    .single();
   if (error) return new NextResponse(error.message, { status: 500 });
-  return NextResponse.json(data);
+  return NextResponse.json({ ...DEFAULTS, ...(data ?? {}) });
 }

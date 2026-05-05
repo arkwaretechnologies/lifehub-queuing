@@ -7,7 +7,6 @@ const schema = z.object({
   ADMIN_SESSION_SECRET: z.string().min(16).optional(),
   ELEVENLABS_API_KEY: z.string().min(1).optional(),
   ELEVENLABS_VOICE_ID: z.string().min(1).optional(),
-  ELEVENLABS_VOICE_ID_BISAYA: z.string().min(1).optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -21,7 +20,6 @@ export const env = parsed.success
       ADMIN_SESSION_SECRET: process.env.ADMIN_SESSION_SECRET,
       ELEVENLABS_API_KEY: process.env.ELEVENLABS_API_KEY,
       ELEVENLABS_VOICE_ID: process.env.ELEVENLABS_VOICE_ID,
-      ELEVENLABS_VOICE_ID_BISAYA: process.env.ELEVENLABS_VOICE_ID_BISAYA,
     };
 
 export function requireEnv<K extends keyof typeof env>(key: K): NonNullable<(typeof env)[K]> {

@@ -226,12 +226,8 @@ export function QueueScreenClient({
     const counterLabel = counterLabelById.get(latest.counter_id) ?? "the counter";
     const spokenQueue = formatQueueForSpeech(latest.queue_display);
     const englishText = `Now serving ${spokenQueue}. Please proceed to ${counterLabel}.`;
-    const bisayaText = `Numero ${spokenQueue}. Palihug adto sa ${counterLabel}.`;
 
-    speakAnnouncement([
-      { text: englishText, voice: "primary" },
-      { text: bisayaText, voice: "bisaya" },
-    ]);
+    speakAnnouncement(englishText);
     lastSpokenKeyRef.current = speakKey;
   }, [tickets, counterLabelById]);
 

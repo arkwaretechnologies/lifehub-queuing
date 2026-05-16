@@ -1,6 +1,8 @@
 import { QueueScreenClient } from "@/app/queue/[screenId]/QueueScreenClient";
 import type { MediaPlaylistItem, QueueScreen } from "@/config/types";
 import { supabaseServer } from "@/db/supabaseServer";
+import { resolveLaboratoryCounterCode } from "@/queue/displayCounters";
+import { filterLaboratoryTicketsForPaidDisplay } from "@/queue/labQueuePaidFilter";
 import { formatTicketDateForQueue } from "@/queue/ticketDate";
 import type { QueueTicket } from "@/queue/types";
 
@@ -31,21 +33,35 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
   const priorities = (prioritiesRaw ?? []) as Priority[];
 
   const counterIds = counters.map((c) => c.id);
+  const labCode = resolveLaboratoryCounterCode(screen ?? null, counters);
+  const labCounterId = labCode
+    ? (counters.find((c) => c.code.toUpperCase() === labCode.toUpperCase())?.id ?? null)
+    : null;
+
   const ticketDate = formatTicketDateForQueue(new Date());
-  const { data: ticketsRaw } = await supabase
+  const { data: ticketsRaw, error: ticketsError } = await supabase
     .from("queue_tickets")
     .select(
-      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at",
+      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id",
     )
     .in("counter_id", counterIds.length ? counterIds : ["00000000-0000-0000-0000-000000000000"])
     .eq("ticket_date", ticketDate)
     .in("status", ["Waiting", "Called", "Serving", "Completed"]);
 
-  const initialTickets = (ticketsRaw ?? []).map((t) => ({
+  if (ticketsError) throw new Error(ticketsError.message);
+
+  const mappedTickets = (ticketsRaw ?? []).map((t) => ({
     ...(t as QueueTicket),
     id: String((t as QueueTicket).id),
     counter_id: String((t as QueueTicket).counter_id),
   })) as QueueTicket[];
+
+  const { rows: initialTickets, error: labFilterError } = await filterLaboratoryTicketsForPaidDisplay(
+    supabase,
+    mappedTickets,
+    labCounterId,
+  );
+  if (labFilterError) throw new Error(labFilterError);
 
   let playlistItems: MediaPlaylistItem[] = [];
   let playlistLoop = true;
@@ -90,6 +106,15 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
     playlistItems = (itemsRaw ?? []) as MediaPlaylistItem[];
   }
 
+  const initialPaidLabRequestIds = [
+    ...new Set(
+      initialTickets
+        .filter((t) => labCounterId && t.counter_id === labCounterId)
+        .map((t) => String(t.lab_request_id ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
+
   return (
     <QueueScreenClient
       screenId={screenId}
@@ -97,6 +122,7 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
       counters={counters}
       priorities={priorities}
       initialTickets={initialTickets}
+      initialPaidLabRequestIds={initialPaidLabRequestIds}
       playlistItems={playlistItems}
       playlistLoop={playlistLoop}
     />

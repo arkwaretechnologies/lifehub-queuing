@@ -2,6 +2,11 @@
 
 
 import { supabaseServer } from "@/db/supabaseServer";
+import { resolveLaboratoryCounterCode } from "@/queue/displayCounters";
+import {
+  filterLaboratoryTicketsForPaidDisplay,
+  labRequestIdsWithLabSales,
+} from "@/queue/labQueuePaidFilter";
 import { formatTicketDateForQueue } from "@/queue/ticketDate";
 import type { QueueTicket } from "@/queue/types";
 
@@ -200,32 +205,62 @@ export async function issueQueueTicket({
   return ticket;
 }
 
+const QUEUE_TICKET_SELECT =
+  "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id";
+
+function mapQueueTicketRows(ticketsRaw: unknown[]): QueueTicket[] {
+  return (ticketsRaw ?? []).map((t) => ({
+    ...(t as QueueTicket),
+    id: String((t as QueueTicket).id),
+    counter_id: String((t as QueueTicket).counter_id),
+  })) as QueueTicket[];
+}
+
+/** Paid `lab_request_id` values for client-side lab queue filtering (realtime backup). */
+export async function fetchPaidLabRequestIds(labRequestIds: string[]): Promise<string[]> {
+  const supabase = supabaseServer();
+  const { ids, error } = await labRequestIdsWithLabSales(supabase, labRequestIds);
+  if (error) throw new Error(error);
+  return [...ids];
+}
+
 /** Service-role read for TV refresh (bypasses browser RLS on `queue_tickets`). */
 export async function refreshQueueTicketsForScreen(_screenId: string): Promise<QueueTicket[]> {
   const supabase = supabaseServer();
 
   const { data: countersRaw } = await supabase
     .from("queue_counters")
-    .select("id")
+    .select("id, code, name, description")
     .eq("is_active", true);
 
-  const counterIds = (countersRaw ?? []).map((c) => String(c.id));
+  const counters = (countersRaw ?? []).map((c) => ({
+    id: String(c.id),
+    code: String(c.code),
+    name: String((c as { name?: string | null }).name ?? (c as { code?: string }).code ?? ""),
+    description: (c as { description?: string | null }).description ?? null,
+  }));
+  const counterIds = counters.map((c) => c.id);
+  const labCode = resolveLaboratoryCounterCode(null, counters);
+  const labCounterId = labCode
+    ? (counters.find((c) => c.code.toUpperCase() === labCode.toUpperCase())?.id ?? null)
+    : null;
 
   const ticketDate = formatTicketDateForQueue(new Date());
   const { data: ticketsRaw, error } = await supabase
     .from("queue_tickets")
-    .select(
-      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at",
-    )
+    .select(QUEUE_TICKET_SELECT)
     .in("counter_id", counterIds.length ? counterIds : ["00000000-0000-0000-0000-000000000000"])
     .eq("ticket_date", ticketDate)
     .in("status", ["Waiting", "Called", "Serving", "Completed"]);
 
   if (error) throw new Error(error.message);
 
-  return (ticketsRaw ?? []).map((t) => ({
-    ...(t as QueueTicket),
-    id: String((t as QueueTicket).id),
-    counter_id: String((t as QueueTicket).counter_id),
-  })) as QueueTicket[];
+  const mapped = mapQueueTicketRows(ticketsRaw ?? []);
+  const { rows, error: filterError } = await filterLaboratoryTicketsForPaidDisplay(
+    supabase,
+    mapped,
+    labCounterId,
+  );
+  if (filterError) throw new Error(filterError);
+  return rows;
 }

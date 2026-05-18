@@ -21,6 +21,12 @@ export type QueueTicket = {
   completed_at?: string | null;
   /** When set, TV lab queue shows this ticket only after cashier payment (`lab_sales`). */
   lab_request_id?: string | null;
+  /** When set, TV imaging queue shows this ticket only after cashier payment (`lab_sales.imaging_request_id`). */
+  imaging_request_id?: string | null;
+  includes_lab?: boolean | null;
+  includes_imaging?: boolean | null;
+  /** LifeHub writes `[Active] dept=LAB|IMAG` when calling shared lab+imaging tickets. */
+  notes?: string | null;
 };
 
 export type QueueAccent = "blue" | "green" | "gold" | "purple" | "red" | "cyan" | "orange" | "pink";

@@ -1,17 +1,8 @@
 import { QueueScreenClient } from "@/app/queue/[screenId]/QueueScreenClient";
 import type { MediaPlaylistItem, QueueScreen } from "@/config/types";
 import { supabaseServer } from "@/db/supabaseServer";
-import {
-  resolveImagingCounterCode,
-  resolveLaboratoryCounterCode,
-} from "@/queue/displayCounters";
-import { fetchDiagnosticQueueProgress } from "@/queue/diagnosticQueueProgress";
-import {
-  imagingRequestIdsWithSales,
-  labRequestIdsWithLabSales,
-  ticketIncludesImaging,
-  ticketIncludesLaboratory,
-} from "@/queue/labQueuePaidFilter";
+import { resolveLaboratoryCounterCode } from "@/queue/displayCounters";
+import { filterLaboratoryTicketsForPaidDisplay } from "@/queue/labQueuePaidFilter";
 import { formatTicketDateForQueue } from "@/queue/ticketDate";
 import type { QueueTicket } from "@/queue/types";
 
@@ -46,16 +37,12 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
   const labCounterId = labCode
     ? (counters.find((c) => c.code.toUpperCase() === labCode.toUpperCase())?.id ?? null)
     : null;
-  const imagingCode = resolveImagingCounterCode(screen ?? null, counters);
-  const imagingCounterId = imagingCode
-    ? (counters.find((c) => c.code.toUpperCase() === imagingCode.toUpperCase())?.id ?? null)
-    : null;
 
   const ticketDate = formatTicketDateForQueue(new Date());
   const { data: ticketsRaw, error: ticketsError } = await supabase
     .from("queue_tickets")
     .select(
-      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id,imaging_request_id,includes_lab,includes_imaging,notes",
+      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id",
     )
     .in("counter_id", counterIds.length ? counterIds : ["00000000-0000-0000-0000-000000000000"])
     .eq("ticket_date", ticketDate)
@@ -63,35 +50,18 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
 
   if (ticketsError) throw new Error(ticketsError.message);
 
-  const initialTickets = (ticketsRaw ?? []).map((t) => ({
+  const mappedTickets = (ticketsRaw ?? []).map((t) => ({
     ...(t as QueueTicket),
     id: String((t as QueueTicket).id),
     counter_id: String((t as QueueTicket).counter_id),
   })) as QueueTicket[];
 
-  const labRequestIds = [
-    ...new Set(
-      initialTickets
-        .filter((t) => ticketIncludesLaboratory(t, labCounterId))
-        .map((t) => String(t.lab_request_id ?? "").trim())
-        .filter(Boolean),
-    ),
-  ];
-  const imagingRequestIds = [
-    ...new Set(
-      initialTickets
-        .filter((t) => ticketIncludesImaging(t, imagingCounterId))
-        .map((t) => String(t.imaging_request_id ?? "").trim())
-        .filter(Boolean),
-    ),
-  ];
-
-  const [{ ids: paidLabIds }, { ids: paidImagingIds }, progress] = await Promise.all([
-    labRequestIdsWithLabSales(supabase, labRequestIds),
-    imagingRequestIdsWithSales(supabase, imagingRequestIds),
-    fetchDiagnosticQueueProgress(supabase, labRequestIds, imagingRequestIds),
-  ]);
-  if (progress.error) throw new Error(progress.error);
+  const { rows: initialTickets, error: labFilterError } = await filterLaboratoryTicketsForPaidDisplay(
+    supabase,
+    mappedTickets,
+    labCounterId,
+  );
+  if (labFilterError) throw new Error(labFilterError);
 
   let playlistItems: MediaPlaylistItem[] = [];
   let playlistLoop = true;
@@ -136,6 +106,15 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
     playlistItems = (itemsRaw ?? []) as MediaPlaylistItem[];
   }
 
+  const initialPaidLabRequestIds = [
+    ...new Set(
+      initialTickets
+        .filter((t) => labCounterId && t.counter_id === labCounterId)
+        .map((t) => String(t.lab_request_id ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
+
   return (
     <QueueScreenClient
       screenId={screenId}
@@ -143,12 +122,7 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
       counters={counters}
       priorities={priorities}
       initialTickets={initialTickets}
-      initialPaidLabRequestIds={[...paidLabIds]}
-      initialPaidImagingRequestIds={[...paidImagingIds]}
-      initialLabCollectedIds={progress.labCollectedIds}
-      initialImagingCapturedIds={progress.imagingCapturedIds}
-      labCounterId={labCounterId}
-      imagingCounterId={imagingCounterId}
+      initialPaidLabRequestIds={initialPaidLabRequestIds}
       playlistItems={playlistItems}
       playlistLoop={playlistLoop}
     />

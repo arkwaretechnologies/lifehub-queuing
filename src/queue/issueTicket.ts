@@ -2,8 +2,11 @@
 
 
 import { supabaseServer } from "@/db/supabaseServer";
-import { fetchDiagnosticQueueProgress } from "@/queue/diagnosticQueueProgress";
-import { imagingRequestIdsWithSales, labRequestIdsWithLabSales } from "@/queue/labQueuePaidFilter";
+import { resolveLaboratoryCounterCode } from "@/queue/displayCounters";
+import {
+  filterLaboratoryTicketsForPaidDisplay,
+  labRequestIdsWithLabSales,
+} from "@/queue/labQueuePaidFilter";
 import { formatTicketDateForQueue } from "@/queue/ticketDate";
 import type { QueueTicket } from "@/queue/types";
 
@@ -203,7 +206,7 @@ export async function issueQueueTicket({
 }
 
 const QUEUE_TICKET_SELECT =
-  "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id,imaging_request_id,includes_lab,includes_imaging,notes";
+  "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id";
 
 function mapQueueTicketRows(ticketsRaw: unknown[]): QueueTicket[] {
   return (ticketsRaw ?? []).map((t) => ({
@@ -221,29 +224,6 @@ export async function fetchPaidLabRequestIds(labRequestIds: string[]): Promise<s
   return [...ids];
 }
 
-/** Paid `imaging_request_id` values for client-side imaging queue filtering (realtime backup). */
-export async function fetchPaidImagingRequestIds(imagingRequestIds: string[]): Promise<string[]> {
-  const supabase = supabaseServer();
-  const { ids, error } = await imagingRequestIdsWithSales(supabase, imagingRequestIds);
-  if (error) throw new Error(error);
-  return [...ids];
-}
-
-/** Lab collected + imaging captured request ids for TV card filtering. */
-export async function fetchDiagnosticProgressForTickets(
-  labRequestIds: string[],
-  imagingRequestIds: string[],
-): Promise<{ labCollectedIds: string[]; imagingCapturedIds: string[] }> {
-  const supabase = supabaseServer();
-  const { labCollectedIds, imagingCapturedIds, error } = await fetchDiagnosticQueueProgress(
-    supabase,
-    labRequestIds,
-    imagingRequestIds,
-  );
-  if (error) throw new Error(error);
-  return { labCollectedIds, imagingCapturedIds };
-}
-
 /** Service-role read for TV refresh (bypasses browser RLS on `queue_tickets`). */
 export async function refreshQueueTicketsForScreen(_screenId: string): Promise<QueueTicket[]> {
   const supabase = supabaseServer();
@@ -253,7 +233,17 @@ export async function refreshQueueTicketsForScreen(_screenId: string): Promise<Q
     .select("id, code, name, description")
     .eq("is_active", true);
 
-  const counterIds = (countersRaw ?? []).map((c) => String(c.id));
+  const counters = (countersRaw ?? []).map((c) => ({
+    id: String(c.id),
+    code: String(c.code),
+    name: String((c as { name?: string | null }).name ?? (c as { code?: string }).code ?? ""),
+    description: (c as { description?: string | null }).description ?? null,
+  }));
+  const counterIds = counters.map((c) => c.id);
+  const labCode = resolveLaboratoryCounterCode(null, counters);
+  const labCounterId = labCode
+    ? (counters.find((c) => c.code.toUpperCase() === labCode.toUpperCase())?.id ?? null)
+    : null;
 
   const ticketDate = formatTicketDateForQueue(new Date());
   const { data: ticketsRaw, error } = await supabase
@@ -265,5 +255,12 @@ export async function refreshQueueTicketsForScreen(_screenId: string): Promise<Q
 
   if (error) throw new Error(error.message);
 
-  return mapQueueTicketRows(ticketsRaw ?? []);
+  const mapped = mapQueueTicketRows(ticketsRaw ?? []);
+  const { rows, error: filterError } = await filterLaboratoryTicketsForPaidDisplay(
+    supabase,
+    mapped,
+    labCounterId,
+  );
+  if (filterError) throw new Error(filterError);
+  return rows;
 }

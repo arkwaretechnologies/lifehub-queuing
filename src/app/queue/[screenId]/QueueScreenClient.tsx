@@ -8,25 +8,12 @@ import { StatusBar } from "@/components/StatusBar/StatusBar";
 import { MediaPanel } from "@/components/MediaPanel/MediaPanel";
 import { buildQueueCard } from "@/queue/buildCards";
 import { isSupabaseBrowserConfigured, supabaseBrowser } from "@/db/supabaseBrowser";
+import { resolveEntranceCounterCode, resolveLaboratoryCounterCode, resolveServiceCounters } from "@/queue/displayCounters";
+import { fetchPaidLabRequestIds, refreshQueueTicketsForScreen } from "@/queue/issueTicket";
 import {
-  resolveEntranceCounterCode,
-  resolveImagingCounterCode,
-  resolveLaboratoryCounterCode,
-  resolveServiceCounters,
-} from "@/queue/displayCounters";
-import {
-  fetchDiagnosticProgressForTickets,
-  fetchPaidImagingRequestIds,
-  fetchPaidLabRequestIds,
-  refreshQueueTicketsForScreen,
-} from "@/queue/issueTicket";
-import {
-  ticketIncludesImaging,
-  ticketIncludesLaboratory,
-  ticketsForImagingCard,
-  ticketsForLaboratoryCard,
+  filterTicketsForLaboratoryPaidDisplay,
+  isLaboratoryTicketVisibleOnQueue,
 } from "@/queue/labQueuePaidFilter";
-import { resolveQueueAnnouncementDestination } from "@/queue/queueActiveDept";
 import { cancelAnnouncement, formatQueueForSpeech, speakAnnouncement } from "@/queue/announceClient";
 
 type Counter = { id: string; code: string; name: string; description: string | null };
@@ -36,7 +23,7 @@ const ACTIVE_STATUSES = ["Waiting", "Called", "Serving", "Completed"] as const;
 /** Server action refresh interval; Realtime is primary—this is a backup only. */
 const QUEUE_TICKET_POLL_MS = 20_000;
 
-const SERVICE_ACCENTS: QueueAccent[] = ["gold", "purple", "red", "orange", "pink"];
+const SERVICE_ACCENTS: QueueAccent[] = ["gold", "purple", "red", "cyan", "orange", "pink"];
 
 type QueueTicketRow = {
   id: string;
@@ -51,10 +38,6 @@ type QueueTicketRow = {
   serving_at?: string | null;
   completed_at?: string | null;
   lab_request_id?: string | null;
-  imaging_request_id?: string | null;
-  includes_lab?: boolean | null;
-  includes_imaging?: boolean | null;
-  notes?: string | null;
 };
 
 function normalizeTicketRow(row: Partial<QueueTicketRow> | null | undefined): QueueTicket | null {
@@ -74,10 +57,6 @@ function normalizeTicketRow(row: Partial<QueueTicketRow> | null | undefined): Qu
     serving_at: row.serving_at ? String(row.serving_at) : null,
     completed_at: row.completed_at ? String(row.completed_at) : null,
     lab_request_id: row.lab_request_id ? String(row.lab_request_id) : null,
-    imaging_request_id: row.imaging_request_id ? String(row.imaging_request_id) : null,
-    includes_lab: row.includes_lab ?? null,
-    includes_imaging: row.includes_imaging ?? null,
-    notes: row.notes ? String(row.notes) : null,
   };
 }
 
@@ -88,11 +67,6 @@ export function QueueScreenClient({
   priorities,
   initialTickets,
   initialPaidLabRequestIds,
-  initialPaidImagingRequestIds,
-  initialLabCollectedIds,
-  initialImagingCapturedIds,
-  labCounterId,
-  imagingCounterId,
   playlistItems,
   playlistLoop,
 }: {
@@ -102,11 +76,6 @@ export function QueueScreenClient({
   priorities: Priority[];
   initialTickets: QueueTicket[];
   initialPaidLabRequestIds: string[];
-  initialPaidImagingRequestIds: string[];
-  initialLabCollectedIds: string[];
-  initialImagingCapturedIds: string[];
-  labCounterId: string | null;
-  imagingCounterId: string | null;
   playlistItems: MediaPlaylistItem[];
   playlistLoop: boolean;
 }) {
@@ -114,15 +83,6 @@ export function QueueScreenClient({
   const [tickets, setTickets] = useState<QueueTicket[]>(initialTickets);
   const [paidLabRequestIds, setPaidLabRequestIds] = useState<Set<string> | null>(
     () => new Set(initialPaidLabRequestIds),
-  );
-  const [paidImagingRequestIds, setPaidImagingRequestIds] = useState<Set<string> | null>(
-    () => new Set(initialPaidImagingRequestIds),
-  );
-  const [labCollectedIds, setLabCollectedIds] = useState<Set<string>>(
-    () => new Set(initialLabCollectedIds),
-  );
-  const [imagingCapturedIds, setImagingCapturedIds] = useState<Set<string>>(
-    () => new Set(initialImagingCapturedIds),
   );
   const lastTicketSnapshotRef = useRef<Map<string, { status: string; called_at: string | null }>>(new Map());
   const lastSpokenKeyRef = useRef<string | null>(null);
@@ -164,35 +124,26 @@ export function QueueScreenClient({
   const counterWatchKey = useMemo(() => counterIdsToWatch.join("|"), [counterIdsToWatch]);
 
   const labCode = useMemo(() => resolveLaboratoryCounterCode(screen, counters), [screen, counters]);
-  const imagingCode = useMemo(() => resolveImagingCounterCode(screen, counters), [screen, counters]);
+  const labCounterId = useMemo(() => {
+    if (!labCode) return null;
+    return counterIdByCode.get(labCode) ?? counterIdByCode.get(labCode.toUpperCase()) ?? null;
+  }, [labCode, counterIdByCode]);
 
-  const laboratoryAnnouncementLabel = useMemo(() => {
-    const c = labCode ? counters.find((x) => x.code.toUpperCase() === labCode.toUpperCase()) : null;
-    return (c?.name ?? "").trim() || "Laboratory";
-  }, [counters, labCode]);
-
-  const imagingAnnouncementLabel = useMemo(() => {
-    const c = imagingCode ? counters.find((x) => x.code.toUpperCase() === imagingCode.toUpperCase()) : null;
-    return (c?.name ?? "").trim() || "Imaging";
-  }, [counters, imagingCode]);
-
-  const labTicketsForCard = useMemo(
-    () => ticketsForLaboratoryCard(tickets, labCounterId, paidLabRequestIds, labCollectedIds),
-    [tickets, labCounterId, paidLabRequestIds, labCollectedIds],
+  const displayTickets = useMemo(
+    () => filterTicketsForLaboratoryPaidDisplay(tickets, labCounterId, paidLabRequestIds),
+    [tickets, labCounterId, paidLabRequestIds],
   );
-
-  const imagingTicketsForCard = useMemo(
-    () => ticketsForImagingCard(tickets, imagingCounterId, paidImagingRequestIds, imagingCapturedIds),
-    [tickets, imagingCounterId, paidImagingRequestIds, imagingCapturedIds],
-  );
-
-  const announcementTickets = tickets;
 
   useEffect(() => {
+    if (!labCounterId) {
+      setPaidLabRequestIds(new Set());
+      return;
+    }
+
     const linkedIds = [
       ...new Set(
         tickets
-          .filter((t) => ticketIncludesLaboratory(t, labCounterId))
+          .filter((t) => t.counter_id === labCounterId)
           .map((t) => String(t.lab_request_id ?? "").trim())
           .filter(Boolean),
       ),
@@ -215,77 +166,6 @@ export function QueueScreenClient({
       cancelled = true;
     };
   }, [tickets, labCounterId]);
-
-  useEffect(() => {
-    const linkedIds = [
-      ...new Set(
-        tickets
-          .filter((t) => ticketIncludesImaging(t, imagingCounterId))
-          .map((t) => String(t.imaging_request_id ?? "").trim())
-          .filter(Boolean),
-      ),
-    ];
-    if (linkedIds.length === 0) {
-      setPaidImagingRequestIds(new Set());
-      return;
-    }
-
-    let cancelled = false;
-    void fetchPaidImagingRequestIds(linkedIds)
-      .then((paid) => {
-        if (!cancelled) setPaidImagingRequestIds(new Set(paid));
-      })
-      .catch(() => {
-        if (!cancelled) setPaidImagingRequestIds(new Set());
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [tickets, imagingCounterId]);
-
-  useEffect(() => {
-    const labIds = [
-      ...new Set(
-        tickets
-          .filter((t) => ticketIncludesLaboratory(t, labCounterId))
-          .map((t) => String(t.lab_request_id ?? "").trim())
-          .filter(Boolean),
-      ),
-    ];
-    const imgIds = [
-      ...new Set(
-        tickets
-          .filter((t) => ticketIncludesImaging(t, imagingCounterId))
-          .map((t) => String(t.imaging_request_id ?? "").trim())
-          .filter(Boolean),
-      ),
-    ];
-    if (labIds.length === 0 && imgIds.length === 0) {
-      setLabCollectedIds(new Set());
-      setImagingCapturedIds(new Set());
-      return;
-    }
-
-    let cancelled = false;
-    void fetchDiagnosticProgressForTickets(labIds, imgIds)
-      .then(({ labCollectedIds: labDone, imagingCapturedIds: imgDone }) => {
-        if (!cancelled) {
-          setLabCollectedIds(new Set(labDone));
-          setImagingCapturedIds(new Set(imgDone));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLabCollectedIds(new Set());
-          setImagingCapturedIds(new Set());
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [tickets, labCounterId, imagingCounterId]);
 
   useEffect(() => {
     if (!counterIdsToWatch.length) return;
@@ -334,6 +214,13 @@ export function QueueScreenClient({
           if (idx >= 0) next.splice(idx, 1);
           return next;
         }
+        const visibleOnLabQueue =
+          paidLabRequestIds === null ||
+          isLaboratoryTicketVisibleOnQueue(mapped, labCounterId, paidLabRequestIds);
+        if (!visibleOnLabQueue) {
+          if (idx >= 0) next.splice(idx, 1);
+          return next;
+        }
         if (idx >= 0) next[idx] = mapped;
         else next.push(mapped);
         return next;
@@ -356,7 +243,7 @@ export function QueueScreenClient({
       cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, [counterIdsToWatch, screenId]);
+  }, [counterIdsToWatch, screenId, labCounterId, paidLabRequestIds]);
 
   useEffect(() => {
     if (!counterWatchKey.length) return;
@@ -380,10 +267,12 @@ export function QueueScreenClient({
     };
   }, [screenId, counterWatchKey]);
 
+  // Voice announcement on "Called" transitions (ElevenLabs via /api/tts/announce
+  // with a SpeechSynthesis fallback handled inside speakAnnouncement).
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const called = announcementTickets
+    const called = displayTickets
       .filter((t) => t.status === "Called" && !!t.called_at)
       .slice()
       .sort((a, b) => String(b.called_at).localeCompare(String(a.called_at)));
@@ -396,43 +285,37 @@ export function QueueScreenClient({
     if (!becameCalled) return;
     if (lastSpokenKeyRef.current === speakKey) return;
 
-    const destinationLabel = resolveQueueAnnouncementDestination(latest, {
-      counterLabelById,
-      laboratoryLabel: laboratoryAnnouncementLabel,
-      imagingLabel: imagingAnnouncementLabel,
-    });
+    const counterLabel = counterLabelById.get(latest.counter_id) ?? "the counter";
     const spokenQueue = formatQueueForSpeech(latest.queue_display);
-    const englishText = `Now serving ${spokenQueue}. Please proceed to ${destinationLabel}.`;
+    const englishText = `Now serving ${spokenQueue}. Please proceed to ${counterLabel}.`;
 
     speakAnnouncement(englishText);
     lastSpokenKeyRef.current = speakKey;
-  }, [
-    announcementTickets,
-    counterLabelById,
-    laboratoryAnnouncementLabel,
-    imagingAnnouncementLabel,
-  ]);
+  }, [displayTickets, counterLabelById]);
 
+  // Stop any in-flight announcement when the screen unmounts.
   useEffect(() => {
     return () => {
       cancelAnnouncement();
     };
   }, []);
 
+  // Maintain a minimal snapshot for transition detection.
   useEffect(() => {
     const snap = new Map<string, { status: string; called_at: string | null }>();
-    announcementTickets.forEach((t) => snap.set(t.id, { status: t.status, called_at: t.called_at }));
+    displayTickets.forEach((t) => snap.set(t.id, { status: t.status, called_at: t.called_at }));
     lastTicketSnapshotRef.current = snap;
-  }, [announcementTickets]);
+  }, [displayTickets]);
 
   const cards = useMemo(() => {
     const byCounterId = new Map<string, QueueTicket[]>();
-    tickets.forEach((t) => {
+    displayTickets.forEach((t) => {
       const arr = byCounterId.get(t.counter_id) ?? [];
       arr.push(t);
       byCounterId.set(t.counter_id, arr);
     });
 
+    // --- Entrance / Reception card ---
     const entranceCode = resolveEntranceCounterCode(screen, counters);
     const entranceCounterId = entranceCode
       ? (counterIdByCode.get(entranceCode) ?? counterIdByCode.get(entranceCode.toUpperCase()) ?? null)
@@ -455,11 +338,11 @@ export function QueueScreenClient({
         ]
       : entranceTickets;
 
+    // --- Laboratory card (paid visit-linked orders only; matches LifeHub Lab Appointments) ---
+    const labTickets = labCounterId ? (byCounterId.get(labCounterId) ?? []) : [];
     const labMeta = labCode ? counters.find((c) => c.code.toUpperCase() === labCode.toUpperCase()) : null;
-    const imagingMeta = imagingCode
-      ? counters.find((c) => c.code.toUpperCase() === imagingCode.toUpperCase())
-      : null;
 
+    // --- Dynamic service counter cards (doctors, clinics, etc.) ---
     const serviceCounters = resolveServiceCounters(screen, counters);
 
     const result = [
@@ -474,22 +357,9 @@ export function QueueScreenClient({
         title: labMeta?.name ?? "Laboratory",
         subtitle: labMeta?.description ?? "Collection",
         accent: "green",
-        tickets: labTicketsForCard,
-        cardDept: "LAB",
+        tickets: labTickets,
       }),
     ];
-
-    if (imagingCounterId || imagingTicketsForCard.length > 0) {
-      result.push(
-        buildQueueCard({
-          title: imagingMeta?.name ?? "Imaging",
-          subtitle: imagingMeta?.description ?? "Radiology",
-          accent: "cyan",
-          tickets: imagingTicketsForCard,
-          cardDept: "IMAG",
-        }),
-      );
-    }
 
     serviceCounters.forEach((counter, i) => {
       const id = counterIdByCode.get(counter.code) ?? counterIdByCode.get(counter.code.toUpperCase());
@@ -505,18 +375,7 @@ export function QueueScreenClient({
     });
 
     return result;
-  }, [
-    tickets,
-    screen,
-    counters,
-    counterIdByCode,
-    priorityIdByCode,
-    labCode,
-    imagingCode,
-    labTicketsForCard,
-    imagingTicketsForCard,
-    imagingCounterId,
-  ]);
+  }, [displayTickets, screen, counters, counterIdByCode, priorityIdByCode, labCounterId, labCode]);
 
   return (
     <div

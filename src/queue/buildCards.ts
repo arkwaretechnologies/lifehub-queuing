@@ -1,7 +1,6 @@
 import type { QueueCardModel, QueueTicket } from "@/queue/types";
-import { type QueueCardDept, ticketCountsAsNowServingForDept } from "@/queue/queueActiveDept";
 
-function pickNowServing(tickets: QueueTicket[], cardDept?: QueueCardDept) {
+function pickNowServing(tickets: QueueTicket[]) {
   const recentCompletedCutoffMs = Date.now() - 2 * 60 * 1000;
   const isRecentCompleted = (t: QueueTicket) => {
     if (t.status !== "Completed") return false;
@@ -12,11 +11,7 @@ function pickNowServing(tickets: QueueTicket[], cardDept?: QueueCardDept) {
   };
 
   const active = tickets
-    .filter((t) => {
-      if (!(t.status === "Serving" || t.status === "Called" || isRecentCompleted(t))) return false;
-      if (cardDept) return ticketCountsAsNowServingForDept(t, cardDept);
-      return true;
-    })
+    .filter((t) => t.status === "Serving" || t.status === "Called" || isRecentCompleted(t))
     .sort((a, b) =>
       (b.called_at || b.serving_at || b.completed_at || b.issued_at).localeCompare(
         a.called_at || a.serving_at || a.completed_at || a.issued_at,
@@ -38,17 +33,14 @@ export function buildQueueCard({
   accent,
   tickets,
   nextLimit = 5,
-  cardDept,
 }: {
   title: string;
   subtitle?: string;
   accent: QueueCardModel["accent"];
   tickets: QueueTicket[];
   nextLimit?: number;
-  /** When set, "now serving" respects shared-ticket active department (LAB vs IMAG). */
-  cardDept?: QueueCardDept;
 }): QueueCardModel {
-  const now = pickNowServing(tickets, cardDept);
+  const now = pickNowServing(tickets);
   const next = pickNextUp(tickets, nextLimit);
   return {
     title,
@@ -58,3 +50,4 @@ export function buildQueueCard({
     nextUp: next.map((t) => t.queue_display),
   };
 }
+

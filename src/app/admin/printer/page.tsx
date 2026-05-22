@@ -29,9 +29,7 @@ import {
 } from "@ant-design/icons";
 import type { PrinterSettings } from "@/config/types";
 import {
-  getBleBrowserProfile,
   isBluetoothSupported,
-  isSessionOnlyBleReconnect,
   pairPrinter,
   runtimeDiagnostics,
   testPrint as btTestPrint,
@@ -105,8 +103,6 @@ export default function AdminPrinterPage() {
 
   const preview = Form.useWatch([], form);
   const bluetoothOk = useMemo(() => isBluetoothSupported(), []);
-  const bluefyMode = useMemo(() => isSessionOnlyBleReconnect(), []);
-  const bleProfile = useMemo(() => getBleBrowserProfile(), []);
   const pairedName = Form.useWatch("printer_name", form) as string | null | undefined;
   const pairedId = Form.useWatch("printer_id", form) as string | null | undefined;
 
@@ -330,29 +326,11 @@ export default function AdminPrinterPage() {
                       title="Bluetooth not supported"
                       description={
                         <>
-                          This browser does not expose Web Bluetooth. On iPhone or iPad, install{" "}
-                          <Typography.Text strong>Bluefy</Typography.Text> from the App Store and open this admin page
-                          over HTTPS — Safari and Chrome on iOS cannot pair BLE printers. On Android or desktop, use
-                          Chrome or Edge.
+                          This browser/device does not support Web Bluetooth. If you&apos;re on iPad/iOS, Web Bluetooth is not available in Safari.
+                          You can still print using a USB/system printer via the browser print dialog, or use an Android tablet with Chrome for Bluetooth.
                         </>
                       }
                       type="warning"
-                      showIcon
-                      style={{ marginBottom: 16 }}
-                    />
-                  )}
-                  {bluetoothOk && bluefyMode && (
-                    <Alert
-                      title="Bluefy / iOS mode"
-                      description={
-                        <>
-                          You&apos;re using {bleProfile === "bluefy" ? "Bluefy" : "a browser"} without silent reconnect.
-                          Pair the printer here, then use the Entrance page in the <Typography.Text strong>same Bluefy tab</Typography.Text>.
-                          After closing Bluefy or reloading, tap <Typography.Text strong>Pair Printer</Typography.Text> again — there is no
-                          chrome://flags setting on iOS.
-                        </>
-                      }
-                      type="info"
                       showIcon
                       style={{ marginBottom: 16 }}
                     />
@@ -376,13 +354,10 @@ export default function AdminPrinterPage() {
                             {diagnostics.hint ??
                               "The kiosk won't be able to print silently until the browser can see this device."}
                           </Typography.Paragraph>
-                          {!diagnostics.sessionOnlyReconnect && (
-                            <Typography.Paragraph style={{ marginBottom: 0, fontSize: 12 }} type="secondary">
-                              On Android Chrome: open{" "}
-                              <Typography.Text code>chrome://flags/#enable-web-bluetooth-new-permissions-backend</Typography.Text>,
-                              set it to <Typography.Text strong>Enabled</Typography.Text>, restart Chrome, then re-pair the printer below.
-                            </Typography.Paragraph>
-                          )}
+                          <Typography.Paragraph style={{ marginBottom: 0, fontSize: 12 }} type="secondary">
+                            On Android Chrome: open <Typography.Text code>chrome://flags/#enable-web-bluetooth-new-permissions-backend</Typography.Text>,
+                            set it to <Typography.Text strong>Enabled</Typography.Text>, restart Chrome, then re-pair the printer below.
+                          </Typography.Paragraph>
                         </>
                       }
                       style={{ marginBottom: 16 }}
@@ -420,10 +395,7 @@ export default function AdminPrinterPage() {
                         setPairing(true);
                         setPairError(null);
                         try {
-                          const paired = await pairPrinter({
-                            printer_id: pairedId ?? undefined,
-                            printer_name: pairedName ?? undefined,
-                          });
+                          const paired = await pairPrinter();
                           form.setFieldValue("printer_name", paired.name);
                           form.setFieldValue("printer_id", paired.id);
                           // Persist pairing immediately so entrance kiosk can print

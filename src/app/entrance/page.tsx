@@ -7,6 +7,7 @@ import Image from "next/image";
 import type { PrinterSettings } from "@/config/types";
 import {
   isBluetoothSupported,
+  isSessionOnlyBleReconnect,
   pairPrinter,
   printTicket as btPrintTicket,
   startAutoReconnect,
@@ -58,6 +59,7 @@ export default function EntrancePage() {
   const [printerCfg, setPrinterCfg] = useState<PrinterSettings>(PRINTER_FALLBACK);
   const [bleState, setBleState] = useState<BluetoothConnectionState>("idle");
   const [bleError, setBleError] = useState<string | null>(null);
+  const bluefyMode = isSessionOnlyBleReconnect();
 
   useEffect(() => {
     let cancelled = false;
@@ -271,7 +273,10 @@ export default function EntrancePage() {
             onClick={async () => {
               setRepairing(true);
               try {
-                const paired = await pairPrinter();
+                const paired = await pairPrinter({
+                  printer_id: printerCfg.printer_id,
+                  printer_name: printerCfg.printer_name,
+                });
                 await savePairedPrinter(paired.name, paired.id);
                 const warmup = await warmupBluetoothConnection({
                   printer_id: paired.id,
@@ -295,9 +300,15 @@ export default function EntrancePage() {
           </Button>,
         ]}
       >
-        <Typography.Paragraph style={{ marginBottom: 0 }}>
+        <Typography.Paragraph style={{ marginBottom: bluefyMode ? 8 : 0 }}>
           {printerErrorText || "The saved Bluetooth printer could not be reached."}
         </Typography.Paragraph>
+        {bluefyMode && (
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 13 }}>
+            Using Bluefy on iPhone/iPad: tap <Typography.Text strong>Re-pair printer</Typography.Text> and select your
+            printer from the list. Keep this tab open — Bluetooth permission does not survive app restarts.
+          </Typography.Paragraph>
+        )}
       </Modal>
 
       {/* Header */}

@@ -41,6 +41,99 @@ const SERVICE_UUIDS: BluetoothServiceUUID[] = [
   "0000fff0-0000-1000-8000-00805f9b34fb",
 ];
 
+// Common thermal-printer GATT services for iOS/Bluefy pairing (acceptAllDevices is
+// unreliable there; service filters match the Web Bluetooth spec better).
+const PAIRING_SERVICE_FILTERS: BluetoothLEScanFilter[] = [
+  { services: ["0000ffe0-0000-1000-8000-00805f9b34fb"] },
+  { services: ["0000ff00-0000-1000-8000-00805f9b34fb"] },
+  { services: ["0000fff0-0000-1000-8000-00805f9b34fb"] },
+  { services: [0xffe0] },
+  { services: [0xff00] },
+  { services: [0xfff0] },
+  { services: [0x18f0] },
+];
+
+export type BleBrowserProfile = "chromium" | "bluefy" | "other";
+
+/** Detect Bluefy / iOS Web Bluetooth (no chrome://flags, often no getDevices). */
+export function getBleBrowserProfile(): BleBrowserProfile {
+  if (typeof navigator === "undefined") return "other";
+  const ua = navigator.userAgent;
+  if (/bluefy/i.test(ua)) return "bluefy";
+  const isIOS =
+    /iPhone|iPad|iPod/i.test(ua) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isIOS && navigator.bluetooth) return "bluefy";
+  if (typeof navigator.bluetooth?.getDevices === "function") return "chromium";
+  return "other";
+}
+
+/** Chromium can remember paired devices across reloads when getDevices() exists. */
+export function canUsePersistentBlePermissions(): boolean {
+  return typeof navigator !== "undefined" && typeof navigator.bluetooth?.getDevices === "function";
+}
+
+/** Bluefy and similar browsers only keep BLE permission for the current tab session. */
+export function isSessionOnlyBleReconnect(): boolean {
+  return isBluetoothSupported() && !canUsePersistentBlePermissions();
+}
+
+function reconnectHint(profile: BleBrowserProfile, context: "pair" | "reconnect"): string {
+  if (profile === "bluefy" || isSessionOnlyBleReconnect()) {
+    if (context === "pair") {
+      return "On Bluefy (iPhone/iPad): turn on Bluetooth, wake the printer, tap Pair Printer, and pick your printer from the list. There is no chrome://flags menu — pairing is done in this browser tab.";
+    }
+    return "Bluefy cannot reconnect silently after you close the app or reload the page. Open this page in Bluefy, tap Pair Printer (or Re-pair printer), select the printer again, then print.";
+  }
+  if (context === "pair") {
+    return "Pair the printer using the button below. On Android Chrome you may also enable chrome://flags/#enable-web-bluetooth-new-permissions-backend for silent reconnect after reload.";
+  }
+  return "Saved printer not visible to the browser. On Android Chrome enable chrome://flags/#enable-web-bluetooth-new-permissions-backend, restart Chrome, then re-pair. Otherwise tap Pair Printer again.";
+}
+
+function buildRequestDeviceOptionsList(target?: PrinterTarget): RequestDeviceOptions[] {
+  const optionalServices = SERVICE_UUIDS;
+  const out: RequestDeviceOptions[] = [];
+
+  if (target?.printer_name) {
+    out.push({
+      filters: [{ name: target.printer_name }],
+      optionalServices,
+    });
+    const prefix = target.printer_name.slice(0, 8);
+    if (prefix.length >= 3 && prefix !== target.printer_name) {
+      out.push({
+        filters: [{ namePrefix: prefix }],
+        optionalServices,
+      });
+    }
+  }
+
+  if (isSessionOnlyBleReconnect()) {
+    out.push({ filters: PAIRING_SERVICE_FILTERS, optionalServices });
+  }
+
+  out.push({ acceptAllDevices: true, optionalServices });
+  return out;
+}
+
+async function requestBleDevice(target?: PrinterTarget): Promise<BluetoothDevice> {
+  const optionsList = buildRequestDeviceOptionsList(target);
+  let lastError: unknown;
+
+  for (const options of optionsList) {
+    try {
+      return await navigator.bluetooth.requestDevice(options);
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/cancel|abort/i.test(msg)) throw e;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Bluetooth pairing failed");
+}
+
 // Cache the device for the lifetime of the page so repeat prints in a session
 // don't have to round-trip through getDevices() each time.
 let cachedDevice: BluetoothDevice | null = null;
@@ -138,13 +231,10 @@ export function isBluetoothSupported(): boolean {
   return typeof navigator !== "undefined" && !!navigator.bluetooth;
 }
 
-export async function pairPrinter(): Promise<PairedPrinter> {
+export async function pairPrinter(target?: PrinterTarget): Promise<PairedPrinter> {
   if (!isBluetoothSupported()) throw new Error("Bluetooth not supported");
 
-  const device = await navigator.bluetooth.requestDevice({
-    acceptAllDevices: true,
-    optionalServices: SERVICE_UUIDS,
-  });
+  const device = await requestBleDevice(target);
 
   cachedDevice = device;
   cachedServer = null;
@@ -156,17 +246,21 @@ export async function pairPrinter(): Promise<PairedPrinter> {
   };
 }
 
-async function findKnownDevice(target: PrinterTarget): Promise<BluetoothDevice | null> {
-  if (cachedDevice) {
-    if (target.printer_id && cachedDevice.id === target.printer_id) return cachedDevice;
-    if (!target.printer_id && target.printer_name && cachedDevice.name === target.printer_name) {
-      return cachedDevice;
-    }
+function cachedDeviceMatchesTarget(target: PrinterTarget): boolean {
+  if (!cachedDevice) return false;
+  if (target.printer_id && cachedDevice.id === target.printer_id) return true;
+  if (target.printer_name && cachedDevice.name && cachedDevice.name === target.printer_name) {
+    return true;
   }
+  return false;
+}
 
-  // getDevices() requires the Chromium flag
-  // chrome://flags/#enable-web-bluetooth-new-permissions-backend
-  // and only returns devices the origin still has permission for.
+async function findKnownDevice(target: PrinterTarget): Promise<BluetoothDevice | null> {
+  if (cachedDeviceMatchesTarget(target)) return cachedDevice;
+
+  // Bluefy / iOS Web Bluetooth: permission lasts for this tab session only.
+  if (isSessionOnlyBleReconnect() && cachedDevice) return cachedDevice;
+
   const getDevices = navigator.bluetooth.getDevices?.bind(navigator.bluetooth);
   if (!getDevices) return null;
 
@@ -188,8 +282,6 @@ async function findKnownDevice(target: PrinterTarget): Promise<BluetoothDevice |
     if (byName) return byName;
   }
 
-  // Last-resort fallback for legacy installs where only one device permission
-  // exists and names are unstable/blank after reconnect.
   if (devices.length === 1) return devices[0];
 
   return null;
@@ -409,19 +501,20 @@ async function backgroundReconnect(target: PrinterTarget): Promise<PrintResult> 
   setState("connecting", null);
   bleLog("reconnect started for", target);
 
+  const profile = getBleBrowserProfile();
+  const sessionOnly = isSessionOnlyBleReconnect();
   const start = Date.now();
-  const maxDurationMs = 45_000;
+  const maxDurationMs = sessionOnly && !cachedDevice ? 2_000 : 45_000;
   let attempt = 0;
-  let lastError = "Could not reconnect to the saved Bluetooth printer.";
+  let lastError = reconnectHint(profile, "reconnect");
 
   while (!ctrl.signal.aborted && Date.now() - start < maxDurationMs) {
     attempt += 1;
     try {
       const device = await findKnownDevice(target);
       if (!device) {
-        lastError =
-          "Saved printer not visible to the browser. Enable chrome://flags/#enable-web-bluetooth-new-permissions-backend, restart Chrome, then re-pair the printer.";
-        bleLog(`attempt ${attempt}: getDevices returned no match`);
+        lastError = reconnectHint(profile, "reconnect");
+        bleLog(`attempt ${attempt}: no device match (${sessionOnly ? "session-only" : "getDevices"})`);
       } else {
         cachedDevice = device;
         bleLog(`attempt ${attempt}: device matched`, { id: device.id, name: device.name });
@@ -523,8 +616,8 @@ async function discoverAndConnectWithRetry(
 
     const device = await findKnownDevice(target);
     if (!device) {
-      lastError =
-        "Saved printer not visible to the browser. Enable chrome://flags/#enable-web-bluetooth-new-permissions-backend, restart Chrome, then re-pair the printer.";
+      lastError = reconnectHint(getBleBrowserProfile(), "reconnect");
+      if (isSessionOnlyBleReconnect() && !cachedDevice) break;
       continue;
     }
 
@@ -638,20 +731,48 @@ export async function testPrint(
 export type PrinterDiagnostics = {
   bluetoothSupported: boolean;
   getDevicesAvailable: boolean;
+  sessionOnlyReconnect: boolean;
+  browserProfile: BleBrowserProfile;
   visibleCount: number;
   found: boolean;
   hint?: string;
 };
 
 export async function runtimeDiagnostics(target: PrinterTarget): Promise<PrinterDiagnostics> {
+  const profile = getBleBrowserProfile();
+  const sessionOnly = isSessionOnlyBleReconnect();
   const bluetoothSupported = isBluetoothSupported();
+
   if (!bluetoothSupported) {
+    const isIOS =
+      typeof navigator !== "undefined" &&
+      (/iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
     return {
       bluetoothSupported: false,
       getDevicesAvailable: false,
+      sessionOnlyReconnect: false,
+      browserProfile: profile,
       visibleCount: 0,
       found: false,
-      hint: "Use Chrome or Edge on Android, Windows, Mac, or Linux. iOS browsers do not support Web Bluetooth.",
+      hint: isIOS
+        ? "Install the Bluefy browser from the App Store — Safari and Chrome on iOS do not support Web Bluetooth."
+        : "Use Chrome or Edge on Android, Windows, Mac, or Linux for Bluetooth printing.",
+    };
+  }
+
+  if (sessionOnly) {
+    const found = cachedDeviceMatchesTarget(target) || !!cachedDevice;
+    return {
+      bluetoothSupported: true,
+      getDevicesAvailable: false,
+      sessionOnlyReconnect: true,
+      browserProfile: profile,
+      visibleCount: cachedDevice ? 1 : 0,
+      found,
+      hint: found
+        ? "Printer is connected in this Bluefy tab. Keep this tab open; if you reload or reopen Bluefy, tap Pair Printer again."
+        : reconnectHint(profile, "reconnect"),
     };
   }
 
@@ -660,9 +781,11 @@ export async function runtimeDiagnostics(target: PrinterTarget): Promise<Printer
     return {
       bluetoothSupported: true,
       getDevicesAvailable: false,
-      visibleCount: 0,
-      found: false,
-      hint: "This browser version doesn't expose navigator.bluetooth.getDevices. Update Chrome/Edge to a recent version.",
+      sessionOnlyReconnect: true,
+      browserProfile: profile,
+      visibleCount: cachedDevice ? 1 : 0,
+      found: cachedDeviceMatchesTarget(target),
+      hint: reconnectHint(profile, "reconnect"),
     };
   }
 
@@ -674,11 +797,12 @@ export async function runtimeDiagnostics(target: PrinterTarget): Promise<Printer
   }
 
   const found =
+    cachedDeviceMatchesTarget(target) ||
     !!(target.printer_id && devices.some((d) => d.id === target.printer_id)) ||
     !!(target.printer_name && devices.some((d) => d.name === target.printer_name));
 
   const hint = devices.length === 0
-    ? "Browser can't see any previously-paired devices. Enable chrome://flags/#enable-web-bluetooth-new-permissions-backend, restart the browser, then re-pair."
+    ? reconnectHint("chromium", "reconnect")
     : !found && (target.printer_id || target.printer_name)
       ? "The saved printer isn't in the browser's permission list. Re-pair it from this page."
       : undefined;
@@ -686,6 +810,8 @@ export async function runtimeDiagnostics(target: PrinterTarget): Promise<Printer
   return {
     bluetoothSupported: true,
     getDevicesAvailable: true,
+    sessionOnlyReconnect: false,
+    browserProfile: profile,
     visibleCount: devices.length,
     found,
     hint,

@@ -1,7 +1,6 @@
 import "server-only";
 
-import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-
+const ELEVENLABS_API = "https://api.elevenlabs.io/v1";
 const DEFAULT_MODEL_ID = "eleven_flash_v2_5";
 const DEFAULT_OUTPUT_FORMAT = "mp3_44100_128";
 
@@ -12,16 +11,10 @@ export function isAnnouncementVoice(value: string | null | undefined): value is 
   return !!value && (ANNOUNCEMENT_VOICES as readonly string[]).includes(value);
 }
 
-let cachedClient: ElevenLabsClient | null = null;
-
-function getClient(): ElevenLabsClient {
-  if (cachedClient) return cachedClient;
+function getApiKey(): string {
   const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) {
-    throw new Error("ELEVENLABS_API_KEY is not configured");
-  }
-  cachedClient = new ElevenLabsClient({ apiKey });
-  return cachedClient;
+  if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
+  return apiKey;
 }
 
 function resolveVoiceId(): string {
@@ -41,16 +34,30 @@ export function isElevenLabsConfigured(): boolean {
 
 async function synthesizeAnnouncement(text: string): Promise<ArrayBuffer> {
   const voiceId = resolveVoiceId();
-  const client = getClient();
-  // The SDK returns a web ReadableStream<Uint8Array> for `convert()`. We collect
-  // it into a single buffer so it can be cached and served with Content-Length.
-  const stream = (await client.textToSpeech.convert(voiceId, {
-    text,
-    modelId: DEFAULT_MODEL_ID,
-    outputFormat: DEFAULT_OUTPUT_FORMAT,
-  })) as unknown as ReadableStream<Uint8Array>;
+  const url = new URL(`${ELEVENLABS_API}/text-to-speech/${encodeURIComponent(voiceId)}`);
+  url.searchParams.set("output_format", DEFAULT_OUTPUT_FORMAT);
 
-  return await new Response(stream).arrayBuffer();
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "xi-api-key": getApiKey(),
+      "Content-Type": "application/json",
+      Accept: "audio/mpeg",
+    },
+    body: JSON.stringify({
+      text,
+      model_id: DEFAULT_MODEL_ID,
+    }),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      detail ? `ElevenLabs TTS failed (${res.status}): ${detail}` : `ElevenLabs TTS failed (${res.status})`,
+    );
+  }
+
+  return await res.arrayBuffer();
 }
 
 // Simple LRU keyed by text. Queue announcements repeat heavily

@@ -1,7 +1,7 @@
 "use client";
 
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MediaPlaylistItem } from "@/config/types";
 import { getYouTubeVideoId } from "@/media/youtube";
 
@@ -86,29 +86,32 @@ export function MediaPanel({ items, loop }: Props) {
   const progressPct =
     useTimer && effectiveDuration ? Math.min(100, (tick / effectiveDuration) * 100) : 0;
 
-  // YouTube: advance only when the video finishes (IFrame Player API).
-  useEffect(() => {
-    if (!current || current.type !== "youtube" || !youtubeId) return;
-
-    let cancelled = false;
-
-    function destroyPlayer() {
+  function destroyPlayer() {
+    try {
+      ytPlayerRef.current?.destroy?.();
+    } catch {
+      // ignore
+    } finally {
+      ytPlayerRef.current = null;
+      // The YouTube player mutates the DOM (inserts/removes an <iframe> inside our host).
+      // React must never try to unmount those nodes itself — clear the host synchronously.
       try {
-        ytPlayerRef.current?.destroy?.();
+        ytHostRef.current?.replaceChildren();
       } catch {
         // ignore
-      } finally {
-        ytPlayerRef.current = null;
-        // The YouTube player mutates the DOM (inserts/removes an <iframe> inside our host).
-        // When React is simultaneously reconciling (especially during HMR), we can end up with
-        // a double-removal attempt. Clearing the host makes teardown deterministic.
-        try {
-          ytHostRef.current?.replaceChildren();
-        } catch {
-          // ignore
-        }
       }
     }
+  }
+
+  // YouTube: advance only when the video finishes (IFrame Player API).
+  // useLayoutEffect runs teardown before paint so React never races removeChild on YT iframes.
+  useLayoutEffect(() => {
+    if (!current || current.type !== "youtube" || !youtubeId) {
+      destroyPlayer();
+      return;
+    }
+
+    let cancelled = false;
 
     async function ensureYouTubeApi(): Promise<void> {
       const yt = window.YT as YouTubeApiLike | undefined;
@@ -265,48 +268,66 @@ export function MediaPanel({ items, loop }: Props) {
         >
           No media configured
         </div>
-      ) : current.type === "video" ? (
-        <video
-          key={current.id}
-          ref={videoRef}
-          src={current.src}
-          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-          autoPlay
-          muted
-          playsInline
-          onEnded={next}
-          onError={next}
-        />
-      ) : current.type === "image" ? (
-        <>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            key={current.id}
-            src={current.src}
-            alt={current.title || ""}
-            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-            onError={next}
-          />
-          {effectiveDuration > 0 && (
-            <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "rgba(255,255,255,0.1)" }}>
-              <div
-                style={{
-                  height: "100%",
-                  width: `${progressPct}%`,
-                  background: "linear-gradient(90deg, #3a87ad, #65b6d7)",
-                  transition: "width 1s linear",
-                }}
-              />
-            </div>
-          )}
-        </>
-      ) : youtubeId ? (
-        <>
+      ) : (
+        <div style={{ position: "absolute", inset: 0 }}>
+          {/* Persistent host: YouTube mutates this subtree; never unmount it while the panel is shown. */}
           <div
             ref={ytHostRef}
-            style={{ width: "100%", height: "100%", border: 0 }}
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: current.type === "youtube" && youtubeId ? "block" : "none",
+            }}
           />
-          {useTimer && effectiveDuration > 0 && (
+          {current.type === "video" ? (
+            <video
+              key={current.id}
+              ref={videoRef}
+              src={current.src}
+              style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+              autoPlay
+              muted
+              playsInline
+              onEnded={next}
+              onError={next}
+            />
+          ) : current.type === "image" ? (
+            <>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                key={current.id}
+                src={current.src}
+                alt={current.title || ""}
+                style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+                onError={next}
+              />
+              {effectiveDuration > 0 && (
+                <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "rgba(255,255,255,0.1)" }}>
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${progressPct}%`,
+                      background: "linear-gradient(90deg, #3a87ad, #65b6d7)",
+                      transition: "width 1s linear",
+                    }}
+                  />
+                </div>
+              )}
+            </>
+          ) : current.type === "youtube" && !youtubeId ? (
+            <div
+              style={{
+                height: "100%",
+                display: "grid",
+                placeItems: "center",
+                color: "rgba(255,255,255,0.3)",
+                fontSize: 14,
+              }}
+            >
+              Invalid YouTube link ({current.src})
+            </div>
+          ) : null}
+          {current.type === "youtube" && youtubeId && useTimer && effectiveDuration > 0 && (
             <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "rgba(255,255,255,0.1)" }}>
               <div
                 style={{
@@ -318,18 +339,6 @@ export function MediaPanel({ items, loop }: Props) {
               />
             </div>
           )}
-        </>
-      ) : (
-        <div
-          style={{
-            height: "100%",
-            display: "grid",
-            placeItems: "center",
-            color: "rgba(255,255,255,0.3)",
-            fontSize: 14,
-          }}
-        >
-          Invalid YouTube link ({current.src})
         </div>
       )}
 

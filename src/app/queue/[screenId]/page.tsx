@@ -42,11 +42,11 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
   const { data: ticketsRaw, error: ticketsError } = await supabase
     .from("queue_tickets")
     .select(
-      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id",
+      "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id,includes_lab,includes_imaging,notes",
     )
     .in("counter_id", counterIds.length ? counterIds : ["00000000-0000-0000-0000-000000000000"])
     .eq("ticket_date", ticketDate)
-    .in("status", ["Waiting", "Called", "Serving", "Completed"]);
+    .in("status", ["Waiting", "Called", "Serving", "Completed", "Collected", "Captured"]);
 
   if (ticketsError) throw new Error(ticketsError.message);
 

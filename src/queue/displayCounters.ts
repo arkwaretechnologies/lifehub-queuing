@@ -50,10 +50,15 @@ export function resolveLaboratoryCounterCode(screen: QueueScreen | null, counter
 function isImagingCounter(c: CounterRow): boolean {
   const upper = (s: string | null | undefined) => (s ?? "").toUpperCase();
   return (
-    upper(c.code).includes("IMAGING") ||
+    upper(c.code).includes("IMAG") ||
     upper(c.name).includes("IMAGING") ||
     upper(c.description).includes("IMAGING")
   );
+}
+
+export function resolveImagingCounterCode(counters: CounterRow[]): string | null {
+  const hit = counters.find(isImagingCounter);
+  return hit?.code ?? null;
 }
 
 /** Imaging on the top row with Reception/Lab; remaining service counters below, sorted by name. */

@@ -7,12 +7,8 @@ const DEFAULT_FACILITY_NAME = "LIFEHUB MEDICAL AND DIAGNOSTIC CENTER";
 
 export function StatusBar({
   facilityName = DEFAULT_FACILITY_NAME,
-  connected,
-  screenId: _screenId,
 }: {
   facilityName?: string;
-  connected: boolean;
-  screenId: string;
 }) {
   // null until mount: avoids hydration mismatch (server time ≠ client time / locale).
   const [now, setNow] = useState<Date | null>(null);
@@ -79,41 +75,14 @@ export function StatusBar({
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 24, flexShrink: 0 }}>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 20, fontWeight: 600, color: "#fff", letterSpacing: 1, fontVariantNumeric: "tabular-nums" }}>
-            {timeText}
-          </div>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", letterSpacing: 0.3, minHeight: "1.2em" }}>
-            {dateText}
-          </div>
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div style={{ fontSize: 20, fontWeight: 600, color: "#fff", letterSpacing: 1, fontVariantNumeric: "tabular-nums" }}>
+          {timeText}
         </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "4px 10px",
-            borderRadius: 20,
-            background: connected ? "rgba(82,196,26,0.12)" : "rgba(255,77,79,0.12)",
-            border: `1px solid ${connected ? "rgba(82,196,26,0.25)" : "rgba(255,77,79,0.25)"}`,
-          }}
-        >
-          <div
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: connected ? "#52c41a" : "#ff4d4f",
-              boxShadow: `0 0 6px ${connected ? "#52c41a" : "#ff4d4f"}`,
-            }}
-          />
-          <span style={{ fontSize: 11, fontWeight: 600, color: connected ? "#52c41a" : "#ff4d4f", letterSpacing: 0.5 }}>
-            {connected ? "LIVE" : "OFFLINE"}
-          </span>
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", letterSpacing: 0.3, minHeight: "1.2em" }}>
+          {dateText}
         </div>
       </div>
     </div>
   );
 }
-

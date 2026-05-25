@@ -206,7 +206,7 @@ export async function issueQueueTicket({
 }
 
 const QUEUE_TICKET_SELECT =
-  "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id";
+  "id,counter_id,priority_id,queue_number,queue_display,ticket_date,status,issued_at,called_at,serving_at,completed_at,lab_request_id,includes_lab,includes_imaging,notes";
 
 function mapQueueTicketRows(ticketsRaw: unknown[]): QueueTicket[] {
   return (ticketsRaw ?? []).map((t) => ({
@@ -251,7 +251,7 @@ export async function refreshQueueTicketsForScreen(_screenId: string): Promise<Q
     .select(QUEUE_TICKET_SELECT)
     .in("counter_id", counterIds.length ? counterIds : ["00000000-0000-0000-0000-000000000000"])
     .eq("ticket_date", ticketDate)
-    .in("status", ["Waiting", "Called", "Serving", "Completed"]);
+    .in("status", ["Waiting", "Called", "Serving", "Completed", "Collected", "Captured"]);
 
   if (error) throw new Error(error.message);
 

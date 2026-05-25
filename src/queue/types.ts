@@ -3,6 +3,8 @@ export type QueueStatus =
   | "Called"
   | "Serving"
   | "Completed"
+  | "Collected"
+  | "Captured"
   | "Skipped"
   | "Cancelled"
   | "No Show";
@@ -21,6 +23,9 @@ export type QueueTicket = {
   completed_at?: string | null;
   /** When set, TV lab queue shows this ticket only after cashier payment (`lab_sales`). */
   lab_request_id?: string | null;
+  includes_lab?: boolean;
+  includes_imaging?: boolean;
+  notes?: string | null;
 };
 
 export type QueueAccent = "blue" | "green" | "gold" | "purple" | "red" | "cyan" | "orange" | "pink";

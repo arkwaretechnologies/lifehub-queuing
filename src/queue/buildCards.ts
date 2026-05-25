@@ -11,7 +11,14 @@ function pickNowServing(tickets: QueueTicket[]) {
   };
 
   const active = tickets
-    .filter((t) => t.status === "Serving" || t.status === "Called" || isRecentCompleted(t))
+    .filter(
+      (t) =>
+        t.status === "Serving" ||
+        t.status === "Called" ||
+        t.status === "Collected" ||
+        t.status === "Captured" ||
+        isRecentCompleted(t),
+    )
     .sort((a, b) =>
       (b.called_at || b.serving_at || b.completed_at || b.issued_at).localeCompare(
         a.called_at || a.serving_at || a.completed_at || a.issued_at,

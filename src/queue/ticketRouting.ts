@@ -21,6 +21,15 @@ export function hasSpecimenCollected(notes: string | null | undefined): boolean 
   return value.length > 0 && value.toLowerCase() !== "null";
 }
 
+/** Dept tags in notes only apply to lab/imaging workflow tickets, not reception or clinic queues. */
+export function usesLabImagingDeptRouting(
+  ticket: TicketRoutingFields,
+  labCounterId: string | null,
+): boolean {
+  const onLabCounter = Boolean(labCounterId && String(ticket.counter_id) === labCounterId);
+  return onLabCounter || Boolean(ticket.includes_lab) || Boolean(ticket.includes_imaging);
+}
+
 /**
  * Lab + imaging share one queue number under the laboratory counter.
  * Route each ticket to the TV card that matches the active department.
@@ -30,23 +39,25 @@ export function resolveDisplayCounterId(
   labCounterId: string | null,
   imagingCounterId: string | null,
 ): string {
-  const activeDept = parseActiveDept(ticket.notes);
-  if (activeDept === "IMAG" && imagingCounterId) return imagingCounterId;
-  if (activeDept === "LAB" && labCounterId) return labCounterId;
-
   if (imagingCounterId && String(ticket.counter_id) === imagingCounterId) {
     return imagingCounterId;
   }
 
-  const includesLab = Boolean(ticket.includes_lab);
-  const includesImaging = Boolean(ticket.includes_imaging);
+  if (usesLabImagingDeptRouting(ticket, labCounterId)) {
+    const activeDept = parseActiveDept(ticket.notes);
+    if (activeDept === "IMAG" && imagingCounterId) return imagingCounterId;
+    if (activeDept === "LAB" && labCounterId) return labCounterId;
 
-  if (includesLab && includesImaging && labCounterId && imagingCounterId) {
-    return hasSpecimenCollected(ticket.notes) ? imagingCounterId : labCounterId;
-  }
+    const includesLab = Boolean(ticket.includes_lab);
+    const includesImaging = Boolean(ticket.includes_imaging);
 
-  if (includesImaging && !includesLab && imagingCounterId) {
-    return imagingCounterId;
+    if (includesLab && includesImaging && labCounterId && imagingCounterId) {
+      return hasSpecimenCollected(ticket.notes) ? imagingCounterId : labCounterId;
+    }
+
+    if (includesImaging && !includesLab && imagingCounterId) {
+      return imagingCounterId;
+    }
   }
 
   return ticket.counter_id;

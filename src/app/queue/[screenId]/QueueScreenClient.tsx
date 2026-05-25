@@ -14,15 +14,16 @@ import {
   filterTicketsForLaboratoryPaidDisplay,
   isLaboratoryTicketVisibleOnQueue,
 } from "@/queue/labQueuePaidFilter";
+import { buildAnnouncementText, WARM_ANNOUNCEMENT_PHRASES } from "@/queue/announceText";
 import { resolveDisplayCounterId } from "@/queue/ticketRouting";
-import { cancelAnnouncement, formatQueueForSpeech, speakAnnouncement } from "@/queue/announceClient";
+import { cancelAnnouncement, prefetchAnnouncement, speakAnnouncement } from "@/queue/announceClient";
 
 type Counter = { id: string; code: string; name: string; description: string | null };
 type Priority = { id: number; code: string; name: string; level: number };
 const ACTIVE_STATUSES = ["Waiting", "Called", "Serving", "Completed", "Collected", "Captured"] as const;
 
 /** Server action refresh interval; Realtime is primary—this is a backup only. */
-const QUEUE_TICKET_POLL_MS = 20_000;
+const QUEUE_TICKET_POLL_MS = 5_000;
 
 const SERVICE_ACCENTS: QueueAccent[] = ["gold", "purple", "red", "cyan", "orange", "pink"];
 
@@ -93,6 +94,9 @@ export function QueueScreenClient({
   const lastTicketSnapshotRef = useRef<Map<string, { status: string; called_at: string | null }>>(new Map());
   const lastSpokenKeyRef = useRef<string | null>(null);
   const paidLabRequestIdsRef = useRef<Set<string> | null>(paidLabRequestIds);
+  const counterLabelByIdRef = useRef(new Map<string, string>());
+  const labCounterIdRef = useRef<string | null>(null);
+  const imagingCounterIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     paidLabRequestIdsRef.current = paidLabRequestIds;
@@ -164,6 +168,32 @@ export function QueueScreenClient({
     () => filterTicketsForLaboratoryPaidDisplay(tickets, labCounterId, paidLabRequestIds),
     [tickets, labCounterId, paidLabRequestIds],
   );
+
+  useEffect(() => {
+    counterLabelByIdRef.current = counterLabelById;
+    labCounterIdRef.current = labCounterId;
+    imagingCounterIdRef.current = imagingCounterId;
+  }, [counterLabelById, labCounterId, imagingCounterId]);
+
+  useEffect(() => {
+    for (const phrase of WARM_ANNOUNCEMENT_PHRASES) {
+      prefetchAnnouncement(phrase);
+    }
+  }, []);
+
+  function prefetchIfNewlyCalled(ticket: QueueTicket): void {
+    if (ticket.status !== "Called" || !ticket.called_at) return;
+    const prev = lastTicketSnapshotRef.current.get(ticket.id);
+    const becameCalled = prev?.status !== "Called" || prev?.called_at !== ticket.called_at;
+    if (!becameCalled) return;
+    const text = buildAnnouncementText(
+      ticket,
+      counterLabelByIdRef.current,
+      labCounterIdRef.current,
+      imagingCounterIdRef.current,
+    );
+    prefetchAnnouncement(text);
+  }
 
   useEffect(() => {
     if (!labCounterId) {
@@ -243,15 +273,25 @@ export function QueueScreenClient({
         }
         const visibleOnLabQueue =
           paidLabRequestIdsRef.current === null ||
-          isLaboratoryTicketVisibleOnQueue(mapped, labCounterId, paidLabRequestIdsRef.current);
+          isLaboratoryTicketVisibleOnQueue(mapped, labCounterIdRef.current, paidLabRequestIdsRef.current);
         if (!visibleOnLabQueue) {
           if (idx >= 0) next.splice(idx, 1);
           return next;
         }
+        prefetchIfNewlyCalled(mapped);
         if (idx >= 0) next[idx] = mapped;
         else next.push(mapped);
         return next;
       });
+    };
+
+    const refreshTickets = async () => {
+      try {
+        const rows = await refreshQueueTicketsForScreen(screenId);
+        if (!cancelled) setTickets(rows);
+      } catch {
+        /* keep last snapshot on failure */
+      }
     };
 
     const channel = supabase
@@ -261,7 +301,10 @@ export function QueueScreenClient({
         { event: "*", schema: "public", table: "queue_tickets" },
         (payload) => applyRowChange(payload as { eventType: "INSERT" | "UPDATE" | "DELETE"; new: Record<string, unknown> | null; old: Record<string, unknown> | null }),
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (cancelled) return;
+        if (status === "SUBSCRIBED") void refreshTickets();
+      });
 
     return () => {
       cancelled = true;
@@ -309,13 +352,17 @@ export function QueueScreenClient({
     if (!becameCalled) return;
     if (lastSpokenKeyRef.current === speakKey) return;
 
-    const counterLabel = counterLabelById.get(latest.counter_id) ?? "the counter";
-    const spokenQueue = formatQueueForSpeech(latest.queue_display);
-    const englishText = `Now serving ${spokenQueue}. Please proceed to ${counterLabel}.`;
+    const englishText = buildAnnouncementText(
+      latest,
+      counterLabelById,
+      labCounterId,
+      imagingCounterId,
+    );
 
+    prefetchAnnouncement(englishText);
     speakAnnouncement(englishText);
     lastSpokenKeyRef.current = speakKey;
-  }, [displayTickets, counterLabelById]);
+  }, [displayTickets, counterLabelById, labCounterId, imagingCounterId]);
 
   // Stop any in-flight announcement when the screen unmounts.
   useEffect(() => {

@@ -17,7 +17,12 @@ import {
 import { buildAnnouncementText, WARM_ANNOUNCEMENT_PHRASES } from "@/queue/announceText";
 import { resolveDisplayCounterId } from "@/queue/ticketRouting";
 import { cancelAnnouncement, prefetchAnnouncement, speakAnnouncement } from "@/queue/announceClient";
-import { shouldAnnounceOnCalledAtChange } from "@/queue/queueRecall";
+import {
+  announcementSpeakKey,
+  pickTicketToAnnounce,
+  ticketNeedsAnnouncement,
+  type TicketSnapshot,
+} from "@/queue/queueRecall";
 
 type Counter = { id: string; code: string; name: string; description: string | null };
 type Priority = { id: number; code: string; name: string; level: number };
@@ -46,26 +51,45 @@ type QueueTicketRow = {
   notes?: string | null;
 };
 
-function normalizeTicketRow(row: Partial<QueueTicketRow> | null | undefined): QueueTicket | null {
-  if (!row?.id || row.counter_id == null || row.counter_id === "") return null;
-  const status = row.status;
+function normalizeTicketRow(
+  row: Partial<QueueTicketRow> | null | undefined,
+  prior?: QueueTicket | null,
+): QueueTicket | null {
+  if (!row?.id) return null;
+  const counterId =
+    row.counter_id != null && row.counter_id !== "" ? String(row.counter_id) : prior?.counter_id;
+  if (!counterId) return null;
+  const status = (row.status ?? prior?.status) as string | undefined;
   if (!status || !ACTIVE_STATUSES.includes(status as (typeof ACTIVE_STATUSES)[number])) return null;
   return {
     id: String(row.id),
-    counter_id: String(row.counter_id),
-    priority_id: Number(row.priority_id),
-    queue_number: Number(row.queue_number),
-    queue_display: String(row.queue_display),
-    ticket_date: String(row.ticket_date),
+    counter_id: counterId,
+    priority_id: Number(row.priority_id ?? prior?.priority_id ?? 0),
+    queue_number: Number(row.queue_number ?? prior?.queue_number ?? 0),
+    queue_display: String(row.queue_display ?? prior?.queue_display ?? ""),
+    ticket_date: String(row.ticket_date ?? prior?.ticket_date ?? ""),
     status: status as QueueTicket["status"],
-    issued_at: String(row.issued_at),
-    called_at: row.called_at ? String(row.called_at) : null,
-    serving_at: row.serving_at ? String(row.serving_at) : null,
-    completed_at: row.completed_at ? String(row.completed_at) : null,
-    lab_request_id: row.lab_request_id ? String(row.lab_request_id) : null,
-    includes_lab: Boolean(row.includes_lab),
-    includes_imaging: Boolean(row.includes_imaging),
-    notes: row.notes != null ? String(row.notes) : null,
+    issued_at: String(row.issued_at ?? prior?.issued_at ?? ""),
+    called_at:
+      row.called_at != null && row.called_at !== ""
+        ? String(row.called_at)
+        : (prior?.called_at ?? null),
+    serving_at:
+      row.serving_at != null && row.serving_at !== ""
+        ? String(row.serving_at)
+        : (prior?.serving_at ?? null),
+    completed_at:
+      row.completed_at != null && row.completed_at !== ""
+        ? String(row.completed_at)
+        : (prior?.completed_at ?? null),
+    lab_request_id:
+      row.lab_request_id != null && row.lab_request_id !== ""
+        ? String(row.lab_request_id)
+        : (prior?.lab_request_id ?? null),
+    includes_lab: row.includes_lab != null ? Boolean(row.includes_lab) : Boolean(prior?.includes_lab),
+    includes_imaging:
+      row.includes_imaging != null ? Boolean(row.includes_imaging) : Boolean(prior?.includes_imaging),
+    notes: row.notes != null ? String(row.notes) : (prior?.notes ?? null),
   };
 }
 
@@ -182,11 +206,39 @@ export function QueueScreenClient({
     }
   }, []);
 
-  function prefetchIfNewlyCalled(ticket: QueueTicket): void {
-    if (ticket.status !== "Called" || !ticket.called_at) return;
-    const prev = lastTicketSnapshotRef.current.get(ticket.id);
-    const becameCalled = prev?.status !== "Called" || prev?.called_at !== ticket.called_at;
-    if (!becameCalled) return;
+  function announceTicketIfNeeded(
+    ticket: QueueTicket,
+    prevSnap?: TicketSnapshot,
+    options?: { fromRealtime?: boolean },
+  ): void {
+    const prev = prevSnap ?? lastTicketSnapshotRef.current.get(ticket.id);
+    if (!ticketNeedsAnnouncement(ticket, prev, options)) return;
+
+    const speakKey = announcementSpeakKey(ticket.id, ticket.called_at!);
+    if (lastSpokenKeyRef.current === speakKey) return;
+
+    const text = buildAnnouncementText(
+      ticket,
+      counterLabelByIdRef.current,
+      labCounterIdRef.current,
+      imagingCounterIdRef.current,
+    );
+    prefetchAnnouncement(text);
+    speakAnnouncement(text);
+    lastSpokenKeyRef.current = speakKey;
+    lastTicketSnapshotRef.current.set(ticket.id, {
+      status: ticket.status,
+      called_at: ticket.called_at,
+    });
+  }
+
+  function prefetchIfNewlyCalled(
+    ticket: QueueTicket,
+    prevSnap?: TicketSnapshot,
+    options?: { fromRealtime?: boolean },
+  ): void {
+    const prev = prevSnap ?? lastTicketSnapshotRef.current.get(ticket.id);
+    if (!ticketNeedsAnnouncement(ticket, prev, options)) return;
     const text = buildAnnouncementText(
       ticket,
       counterLabelByIdRef.current,
@@ -267,7 +319,11 @@ export function QueueScreenClient({
           return next;
         }
 
-        const mapped = normalizeTicketRow(rowNew);
+        const prior = idx >= 0 ? next[idx] : null;
+        const prevSnap = prior
+          ? { status: prior.status, called_at: prior.called_at }
+          : lastTicketSnapshotRef.current.get(rowId);
+        const mapped = normalizeTicketRow(rowNew, prior);
         if (!mapped || !watchSet.has(mapped.counter_id)) {
           if (idx >= 0) next.splice(idx, 1);
           return next;
@@ -279,7 +335,10 @@ export function QueueScreenClient({
           if (idx >= 0) next.splice(idx, 1);
           return next;
         }
-        prefetchIfNewlyCalled(mapped);
+        if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
+          prefetchIfNewlyCalled(mapped, prevSnap, { fromRealtime: true });
+          announceTicketIfNeeded(mapped, prevSnap, { fromRealtime: true });
+        }
         if (idx >= 0) next[idx] = mapped;
         else next.push(mapped);
         return next;
@@ -335,38 +394,12 @@ export function QueueScreenClient({
     };
   }, [screenId, counterWatchKey]);
 
-  // Voice on call + LifeHub recall (recall bumps `called_at` without changing status).
+  // Backup path when poll refresh applies ticket changes (realtime handler is primary).
   useEffect(() => {
     if (typeof window === "undefined") return;
-
-    const announceable = displayTickets
-      .filter((t) => !!t.called_at && shouldAnnounceOnCalledAtChange(t.status))
-      .slice()
-      .sort((a, b) => String(b.called_at).localeCompare(String(a.called_at)));
-    const latest = announceable[0] ?? null;
-    if (!latest?.called_at) return;
-
-    const prev = lastTicketSnapshotRef.current.get(latest.id);
-    const calledAtChanged = prev?.called_at !== latest.called_at;
-    const enteredAnnounceable =
-      !!prev &&
-      !shouldAnnounceOnCalledAtChange(prev.status as QueueTicket["status"]) &&
-      shouldAnnounceOnCalledAtChange(latest.status);
-    if (!calledAtChanged && !enteredAnnounceable) return;
-
-    const speakKey = `${latest.id}:${latest.called_at}`;
-    if (lastSpokenKeyRef.current === speakKey) return;
-
-    const englishText = buildAnnouncementText(
-      latest,
-      counterLabelById,
-      labCounterId,
-      imagingCounterId,
-    );
-
-    prefetchAnnouncement(englishText);
-    speakAnnouncement(englishText);
-    lastSpokenKeyRef.current = speakKey;
+    const ticket = pickTicketToAnnounce(displayTickets, lastTicketSnapshotRef.current);
+    if (!ticket?.called_at) return;
+    announceTicketIfNeeded(ticket);
   }, [displayTickets, counterLabelById, labCounterId, imagingCounterId]);
 
   // Stop any in-flight announcement when the screen unmounts.

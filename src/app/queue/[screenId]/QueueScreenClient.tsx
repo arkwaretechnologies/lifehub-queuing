@@ -16,6 +16,7 @@ import {
 } from "@/queue/labQueuePaidFilter";
 import { resolveDisplayCounterId } from "@/queue/ticketRouting";
 import { cancelAnnouncement, formatQueueForSpeech, speakAnnouncement } from "@/queue/announceClient";
+import { shouldAnnounceOnCalledAtChange } from "@/queue/queueRecall";
 
 type Counter = { id: string; code: string; name: string; description: string | null };
 type Priority = { id: number; code: string; name: string; level: number };
@@ -291,22 +292,26 @@ export function QueueScreenClient({
     };
   }, [screenId, counterWatchKey]);
 
-  // Voice announcement on "Called" transitions (ElevenLabs via /api/tts/announce
-  // with a SpeechSynthesis fallback handled inside speakAnnouncement).
+  // Voice on call + LifeHub recall (recall bumps `called_at` without changing status).
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const called = displayTickets
-      .filter((t) => t.status === "Called" && !!t.called_at)
+    const announceable = displayTickets
+      .filter((t) => !!t.called_at && shouldAnnounceOnCalledAtChange(t.status))
       .slice()
       .sort((a, b) => String(b.called_at).localeCompare(String(a.called_at)));
-    const latest = called[0] ?? null;
+    const latest = announceable[0] ?? null;
     if (!latest?.called_at) return;
 
     const prev = lastTicketSnapshotRef.current.get(latest.id);
-    const becameCalled = prev?.status !== "Called" || prev?.called_at !== latest.called_at;
+    const calledAtChanged = prev?.called_at !== latest.called_at;
+    const enteredAnnounceable =
+      !!prev &&
+      !shouldAnnounceOnCalledAtChange(prev.status as QueueTicket["status"]) &&
+      shouldAnnounceOnCalledAtChange(latest.status);
+    if (!calledAtChanged && !enteredAnnounceable) return;
+
     const speakKey = `${latest.id}:${latest.called_at}`;
-    if (!becameCalled) return;
     if (lastSpokenKeyRef.current === speakKey) return;
 
     const counterLabel = counterLabelById.get(latest.counter_id) ?? "the counter";

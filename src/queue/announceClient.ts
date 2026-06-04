@@ -1,6 +1,10 @@
 "use client";
 
+import { announcementUrlForText } from "@/queue/announceText";
+
 export type AnnouncementVoice = "primary" | "bisaya";
+
+const prefetchedTexts = new Set<string>();
 
 export type AnnouncementClip = {
   text: string;
@@ -44,14 +48,28 @@ function speakViaSynthesis(text: string): Promise<void> {
   });
 }
 
+/** Warm server + browser cache without playing audio. Safe to call repeatedly. */
+export function prefetchAnnouncement(text: string, voice?: AnnouncementVoice): void {
+  if (typeof window === "undefined") return;
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  const cacheKey = voice ? `${voice}:${trimmed}` : trimmed;
+  if (prefetchedTexts.has(cacheKey)) return;
+  prefetchedTexts.add(cacheKey);
+
+  const url = announcementUrlForText(trimmed, voice);
+  void fetch(url).catch(() => {
+    prefetchedTexts.delete(cacheKey);
+  });
+}
+
 function playClip(clip: AnnouncementClip): Promise<void> {
-  const params = new URLSearchParams({ text: clip.text });
-  if (clip.voice) params.set("voice", clip.voice);
-  const url = `/api/tts/announce?${params.toString()}`;
+  const url = announcementUrlForText(clip.text, clip.voice);
 
   return new Promise<void>((resolve, reject) => {
     const audio = new Audio(url);
     audio.preload = "auto";
+    audio.load();
     activeAudio = audio;
 
     let settled = false;
@@ -117,10 +135,4 @@ export function cancelAnnouncement(): void {
   }
 }
 
-/**
- * Format a queue display ("G-001") so TTS pronounces digits individually
- * ("G-0 0 1" → "G dash zero zero one") instead of as a multi-digit number.
- */
-export function formatQueueForSpeech(display: string): string {
-  return display.replace(/\d{2,}/g, (match) => match.split("").join(" "));
-}
+export { formatQueueForSpeech } from "@/queue/announceText";

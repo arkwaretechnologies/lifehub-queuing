@@ -32,6 +32,7 @@ export type PrinterSettings = {
   auto_print_delay_ms: number;
   font_size_number: number;
   printer_name: string | null;
+  printer_id: string | null;
   updated_at: string;
 };
 

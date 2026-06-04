@@ -47,6 +47,28 @@ export function resolveLaboratoryCounterCode(screen: QueueScreen | null, counter
   return byLabel?.code ?? null;
 }
 
+function isImagingCounter(c: CounterRow): boolean {
+  const upper = (s: string | null | undefined) => (s ?? "").toUpperCase();
+  return (
+    upper(c.code).includes("IMAG") ||
+    upper(c.name).includes("IMAGING") ||
+    upper(c.description).includes("IMAGING")
+  );
+}
+
+export function resolveImagingCounterCode(counters: CounterRow[]): string | null {
+  const hit = counters.find(isImagingCounter);
+  return hit?.code ?? null;
+}
+
+/** Imaging on the top row with Reception/Lab; remaining service counters below, sorted by name. */
+function sortServiceCountersForDisplay(a: CounterRow, b: CounterRow): number {
+  const imagingA = isImagingCounter(a) ? 0 : 1;
+  const imagingB = isImagingCounter(b) ? 0 : 1;
+  if (imagingA !== imagingB) return imagingA - imagingB;
+  return (a.name ?? a.code).localeCompare(b.name ?? b.code, undefined, { numeric: true });
+}
+
 /**
  * Return all "service" counters that are neither entrance nor lab.
  * These become dynamic queue cards on the TV screen.
@@ -62,5 +84,6 @@ export function resolveServiceCounters(screen: QueueScreen | null, counters: Cou
   excluded.add("ENTRANCE");
   for (const c of LABORATORY_COUNTER_CODE_CANDIDATES) excluded.add(c);
 
-  return counters.filter((c) => !excluded.has(c.code.toUpperCase()));
+  const filtered = counters.filter((c) => !excluded.has(c.code.toUpperCase()));
+  return filtered.slice().sort(sortServiceCountersForDisplay);
 }

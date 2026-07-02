@@ -1,5 +1,5 @@
 import { QueueScreenClient } from "@/app/queue/[screenId]/QueueScreenClient";
-import type { MediaPlaylistItem, QueueScreen } from "@/config/types";
+import type { QueueScreen } from "@/config/types";
 import { supabaseServer } from "@/db/supabaseServer";
 import { resolveLaboratoryCounterCode } from "@/queue/displayCounters";
 import { filterLaboratoryTicketsForPaidDisplay } from "@/queue/labQueuePaidFilter";
@@ -63,49 +63,6 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
   );
   if (labFilterError) throw new Error(labFilterError);
 
-  let playlistItems: MediaPlaylistItem[] = [];
-  let playlistLoop = true;
-  let playlistId = screen?.playlist_id ?? null;
-
-  if (!playlistId) {
-    const { data: defaultPlaylist } = await supabase
-      .from("media_playlists")
-      .select("id, loop")
-      .eq("is_default", true)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    playlistId = defaultPlaylist?.id ?? null;
-    playlistLoop = defaultPlaylist?.loop ?? true;
-
-    if (!playlistId) {
-      const { data: latestPlaylist } = await supabase
-        .from("media_playlists")
-        .select("id, loop")
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      playlistId = latestPlaylist?.id ?? null;
-      playlistLoop = latestPlaylist?.loop ?? true;
-    }
-  }
-
-  if (playlistId) {
-    const { data: playlist } = await supabase
-      .from("media_playlists")
-      .select("id, loop")
-      .eq("id", playlistId)
-      .maybeSingle();
-    playlistLoop = playlist?.loop ?? true;
-
-    const { data: itemsRaw } = await supabase
-      .from("media_playlist_items")
-      .select("id,playlist_id,sort_order,type,src,title,duration_seconds")
-      .eq("playlist_id", playlistId)
-      .order("sort_order", { ascending: true });
-    playlistItems = (itemsRaw ?? []) as MediaPlaylistItem[];
-  }
-
   const initialPaidLabRequestIds = [
     ...new Set(
       initialTickets
@@ -123,8 +80,6 @@ export default async function QueueScreenPage({ params }: { params: Promise<{ sc
       priorities={priorities}
       initialTickets={initialTickets}
       initialPaidLabRequestIds={initialPaidLabRequestIds}
-      playlistItems={playlistItems}
-      playlistLoop={playlistLoop}
     />
   );
 }

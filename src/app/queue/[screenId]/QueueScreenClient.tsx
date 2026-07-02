@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MediaPlaylistItem, QueueScreen } from "@/config/types";
+import type { QueueScreen } from "@/config/types";
 import type { QueueAccent, QueueTicket } from "@/queue/types";
 import { QueueBoard } from "@/components/QueueBoard/QueueBoard";
 import { StatusBar } from "@/components/StatusBar/StatusBar";
-import { MediaPanel } from "@/components/MediaPanel/MediaPanel";
 import { buildQueueCard } from "@/queue/buildCards";
 import { isSupabaseBrowserConfigured, supabaseBrowser } from "@/db/supabaseBrowser";
 import { resolveEntranceCounterCode, resolveLaboratoryCounterCode, resolveServiceCounters } from "@/queue/displayCounters";
@@ -100,8 +99,6 @@ export function QueueScreenClient({
   priorities,
   initialTickets,
   initialPaidLabRequestIds,
-  playlistItems,
-  playlistLoop,
 }: {
   screenId: string;
   screen: QueueScreen | null;
@@ -109,8 +106,6 @@ export function QueueScreenClient({
   priorities: Priority[];
   initialTickets: QueueTicket[];
   initialPaidLabRequestIds: string[];
-  playlistItems: MediaPlaylistItem[];
-  playlistLoop: boolean;
 }) {
   const [tickets, setTickets] = useState<QueueTicket[]>(initialTickets);
   const [paidLabRequestIds, setPaidLabRequestIds] = useState<Set<string> | null>(
@@ -501,15 +496,12 @@ export function QueueScreenClient({
       <StatusBar />
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 38%",
-          gap: 16,
           padding: "12px 20px 16px",
           minHeight: 0,
+          height: "100%",
         }}
       >
         <QueueBoard cards={cards} />
-        <MediaPanel items={playlistItems} loop={playlistLoop} />
       </div>
     </div>
   );

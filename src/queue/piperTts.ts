@@ -99,15 +99,24 @@ function playUnlockBlob(blob: Blob): Promise<void> {
   });
 }
 
+export type PiperBootPhase = "checking" | "engine" | "model" | "warmup";
+
+export const PIPER_BOOT_PHASE_LABELS: Record<PiperBootPhase, string> = {
+  checking: "Checking voice files…",
+  engine: "Starting voice engine…",
+  model: "Downloading voice model…",
+  warmup: "Warming up announcements…",
+};
+
 export async function verifyPiperAssets(): Promise<void> {
   if (typeof window === "undefined") return;
 
-  const wasm = await fetch("/piper/piper_phonemize.wasm");
+  const wasm = await fetch("/piper/piper_phonemize.wasm", { method: "HEAD" });
   if (!wasm.ok) {
     throw new Error(`Piper wasm missing at /piper (HTTP ${wasm.status}). Run npm run copy:piper.`);
   }
 
-  const engine = await fetch("/piper-tts-web.js");
+  const engine = await fetch("/piper-tts-web.js", { method: "HEAD" });
   if (!engine.ok) {
     throw new Error(`Piper engine missing at /piper-tts-web.js (HTTP ${engine.status}). Run npm run copy:piper.`);
   }
@@ -131,10 +140,16 @@ async function loadPiperModule(): Promise<PiperModule> {
   return import(/* webpackIgnore: true */ href);
 }
 
-async function getEngine(): Promise<PiperEngine> {
+export type PreloadPiperOptions = {
+  onPhase?: (phase: PiperBootPhase) => void;
+};
+
+async function getEngine(onPhase?: (phase: PiperBootPhase) => void): Promise<PiperEngine> {
   if (!enginePromise) {
     enginePromise = (async () => {
+      onPhase?.("checking");
       await verifyPiperAssets();
+      onPhase?.("engine");
       const mod = await loadPiperModule();
       const voiceProvider = new mod.RemoteVoiceProvider({ baseUrl: LOCAL_VOICE_BASE });
       return new mod.PiperWebEngine({ voiceProvider }) as PiperEngine;
@@ -164,16 +179,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 }
 
 /** Warm engine + voice model using /public/piper assets. */
-export async function preloadPiperVoice(): Promise<void> {
+export async function preloadPiperVoice(options?: PreloadPiperOptions): Promise<void> {
   if (typeof window === "undefined") return;
 
   const modelId = activeModelId();
   if (loadedVoices.has(modelId) && enginePromise) return;
 
+  const onPhase = options?.onPhase;
+
   if (!preloadPromise) {
     preloadPromise = withTimeout(
       (async () => {
-        const engine = await getEngine();
+        onPhase?.("model");
+        const engine = await getEngine(onPhase);
+        onPhase?.("warmup");
         const response = await engine.generate("Ready.", modelId, 0);
         loadedVoices.add(modelId);
         void response.file;

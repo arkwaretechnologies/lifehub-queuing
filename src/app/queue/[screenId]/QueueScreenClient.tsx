@@ -25,10 +25,12 @@ import {
 } from "@/queue/announceClient";
 import {
   isAnnouncementAudioUnlocked,
+  PIPER_BOOT_PHASE_LABELS,
   preloadPiperVoice,
   setActivePiperVoiceFromConfig,
   setAnnouncementAudioUnlocked,
   unlockAnnouncementAudio,
+  type PiperBootPhase,
 } from "@/queue/piperTts";
 import {
   announcementSpeakKey,
@@ -51,6 +53,10 @@ const SERVICE_ACCENTS: QueueAccent[] = ["gold", "purple", "red", "cyan", "orange
 
 /** Minimum time on the voice boot overlay so progress is readable. */
 const VOICE_BOOT_MIN_MS = 1400;
+/** Slow bar advance while preloadPiperVoice runs (avoids frozen 40%). */
+const PRELOAD_PROGRESS_FROM = 40;
+const PRELOAD_PROGRESS_TO = 92;
+const PRELOAD_PROGRESS_CREEP_MS = 150_000;
 
 type QueueTicketRow = {
   id: string;
@@ -135,6 +141,7 @@ export function QueueScreenClient({
   const [voiceBootProgress, setVoiceBootProgress] = useState(0);
   const [voiceBootStatus, setVoiceBootStatus] = useState<"loading" | "error">("loading");
   const [voiceBootError, setVoiceBootError] = useState<string | null>(null);
+  const [voiceBootPhase, setVoiceBootPhase] = useState<PiperBootPhase | null>(null);
   const [voiceBootNonce, setVoiceBootNonce] = useState(0);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const lastTicketSnapshotRef = useRef<Map<string, TicketSnapshot>>(new Map());
@@ -225,6 +232,7 @@ export function QueueScreenClient({
     setVoiceBootStatus("loading");
     setVoiceBootProgress(0);
     setVoiceBootError(null);
+    setVoiceBootPhase(null);
     setVoiceBootNonce((n) => n + 1);
   }, []);
 
@@ -235,11 +243,13 @@ export function QueueScreenClient({
   useEffect(() => {
     let cancelled = false;
     let raf = 0;
+    let creepRaf = 0;
     const started = performance.now();
 
     setVoiceReady(false);
     setVoiceBootStatus("loading");
     setVoiceBootError(null);
+    setVoiceBootPhase(null);
 
     const tickProgress = (target: number) => {
       cancelAnimationFrame(raf);
@@ -255,6 +265,24 @@ export function QueueScreenClient({
       raf = requestAnimationFrame(step);
     };
 
+    const stopPreloadCreep = () => {
+      cancelAnimationFrame(creepRaf);
+    };
+
+    const startPreloadCreep = () => {
+      stopPreloadCreep();
+      const creepStart = performance.now();
+      const step = () => {
+        if (cancelled) return;
+        const t = Math.min(1, (performance.now() - creepStart) / PRELOAD_PROGRESS_CREEP_MS);
+        const value =
+          PRELOAD_PROGRESS_FROM + t * (PRELOAD_PROGRESS_TO - PRELOAD_PROGRESS_FROM);
+        setVoiceBootProgress((prev) => Math.max(prev, value));
+        if (t < 1) creepRaf = requestAnimationFrame(step);
+      };
+      creepRaf = requestAnimationFrame(step);
+    };
+
     tickProgress(12);
 
     void (async () => {
@@ -267,7 +295,13 @@ export function QueueScreenClient({
         }
         if (cancelled) return;
         tickProgress(40);
-        await preloadPiperVoice();
+        startPreloadCreep();
+        await preloadPiperVoice({
+          onPhase: (phase) => {
+            if (!cancelled) setVoiceBootPhase(phase);
+          },
+        });
+        stopPreloadCreep();
         if (cancelled) return;
         tickProgress(88);
         const elapsed = performance.now() - started;
@@ -283,6 +317,7 @@ export function QueueScreenClient({
         }
       } catch (err) {
         console.error("[voice-boot]", err);
+        stopPreloadCreep();
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : "Voice engine failed to start";
         setVoiceBootError(msg);
@@ -294,6 +329,7 @@ export function QueueScreenClient({
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
+      stopPreloadCreep();
     };
   }, [voiceBootNonce]);
 
@@ -597,6 +633,11 @@ export function QueueScreenClient({
         progress={voiceBootProgress}
         status={voiceBootStatus}
         errorDetail={voiceBootError}
+        phaseLabel={
+          voiceBootStatus === "loading" && voiceBootPhase
+            ? PIPER_BOOT_PHASE_LABELS[voiceBootPhase]
+            : null
+        }
         onRetry={voiceBootStatus === "error" ? retryVoiceBoot : undefined}
       />
     );

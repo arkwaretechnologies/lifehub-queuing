@@ -4,10 +4,17 @@ type Props = {
   progress: number;
   status?: "loading" | "error";
   errorDetail?: string | null;
+  phaseLabel?: string | null;
   onRetry?: () => void;
 };
 
-export function VoiceAgentLoader({ progress, status = "loading", errorDetail, onRetry }: Props) {
+export function VoiceAgentLoader({
+  progress,
+  status = "loading",
+  errorDetail,
+  phaseLabel,
+  onRetry,
+}: Props) {
   const pct = Math.max(0, Math.min(100, Math.round(progress)));
 
   return (
@@ -49,7 +56,8 @@ export function VoiceAgentLoader({ progress, status = "loading", errorDetail, on
         {status === "error"
           ? (errorDetail?.trim() ||
               "Could not start the voice engine on this device. Check Wi‑Fi, then tap Retry (first load may take up to a minute).")
-          : "First load downloads the voice model (~60MB). This can take up to a minute."}
+          : (phaseLabel?.trim() ||
+              "First load downloads the voice model (~60MB). This can take up to a minute.")}
       </p>
       <div style={{ width: "min(420px, 100%)", marginTop: 36 }}>
         <div
@@ -80,7 +88,9 @@ export function VoiceAgentLoader({ progress, status = "loading", errorDetail, on
             fontVariantNumeric: "tabular-nums",
           }}
         >
-          <span>{status === "error" ? "Load failed" : "Initializing"}</span>
+          <span>
+            {status === "error" ? "Load failed" : (phaseLabel?.replace(/…$/, "") ?? "Initializing")}
+          </span>
           <span>{pct}%</span>
         </div>
       </div>

@@ -16,7 +16,7 @@ import {
 import { buildAnnouncementText, WARM_ANNOUNCEMENT_PHRASES } from "@/queue/announceText";
 import { resolveDisplayCounterId } from "@/queue/ticketRouting";
 import { EnableSoundBar } from "@/components/VoiceAgent/EnableSoundBar";
-import { VoiceAgentLoader } from "@/components/VoiceAgent/VoiceAgentLoader";
+import { VoiceAgentDock } from "@/components/VoiceAgent/VoiceAgentDock";
 import {
   cancelAnnouncement,
   flushPendingAnnouncements,
@@ -25,13 +25,22 @@ import {
 } from "@/queue/announceClient";
 import {
   isAnnouncementAudioUnlocked,
+  isPiperVoiceModelLoaded,
   PIPER_BOOT_PHASE_LABELS,
+  prefetchRemainingPiperVoiceModels,
   preloadPiperVoice,
-  setActivePiperVoiceFromConfig,
+  resetPiperVoiceBoot,
+  setActivePiperVoice,
   setAnnouncementAudioUnlocked,
   unlockAnnouncementAudio,
   type PiperBootPhase,
 } from "@/queue/piperTts";
+import { DEFAULT_PIPER_VOICE_CHOICE, type PiperVoiceChoice } from "@/queue/piperVoices";
+import {
+  readSessionVoiceChoice,
+  resolveLobbyVoiceChoice,
+  writeSessionVoiceChoice,
+} from "@/queue/voiceSession";
 import {
   announcementSpeakKey,
   pickTicketToAnnounce,
@@ -53,10 +62,26 @@ const SERVICE_ACCENTS: QueueAccent[] = ["gold", "purple", "red", "cyan", "orange
 
 /** Minimum time on the voice boot overlay so progress is readable. */
 const VOICE_BOOT_MIN_MS = 1400;
-/** Slow bar advance while preloadPiperVoice runs (avoids frozen 40%). */
+/** Bar advance before warmup (download + engine). */
 const PRELOAD_PROGRESS_FROM = 40;
-const PRELOAD_PROGRESS_TO = 92;
-const PRELOAD_PROGRESS_CREEP_MS = 150_000;
+const PRELOAD_PROGRESS_TO = 68;
+const PRELOAD_PROGRESS_CREEP_MS = 180_000;
+/** Warmup (ONNX in RAM + first speak) is the slowest step on TV — creep separately. */
+const WARMUP_PROGRESS_FROM = 68;
+const WARMUP_PROGRESS_TO = 97;
+const WARMUP_PROGRESS_CREEP_MS = 600_000;
+/** Voice dropdown switch — engine stays up; shorter UI creep than first lobby load. */
+const SWITCH_PRELOAD_CREEP_MS = 45_000;
+const SWITCH_WARMUP_CREEP_MS = 120_000;
+
+type VoiceBootKind = "initial" | "switch" | "retry";
+
+const VOICE_PHASE_PROGRESS: Record<PiperBootPhase, number> = {
+  checking: 42,
+  engine: 52,
+  model: 58,
+  warmup: 72,
+};
 
 type QueueTicketRow = {
   id: string;
@@ -143,6 +168,9 @@ export function QueueScreenClient({
   const [voiceBootError, setVoiceBootError] = useState<string | null>(null);
   const [voiceBootPhase, setVoiceBootPhase] = useState<PiperBootPhase | null>(null);
   const [voiceBootNonce, setVoiceBootNonce] = useState(0);
+  const voiceBootKindRef = useRef<VoiceBootKind>("initial");
+  // Start with the server-safe default; localStorage is read after mount (avoids hydration mismatch).
+  const [activeVoice, setActiveVoice] = useState<PiperVoiceChoice>(DEFAULT_PIPER_VOICE_CHOICE);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const lastTicketSnapshotRef = useRef<Map<string, TicketSnapshot>>(new Map());
   const lastSpokenKeyRef = useRef<string | null>(null);
@@ -228,22 +256,65 @@ export function QueueScreenClient({
     imagingCounterIdRef.current = imagingCounterId;
   }, [counterLabelById, labCounterId, imagingCounterId]);
 
-  const retryVoiceBoot = useCallback(() => {
+  const beginVoiceBoot = useCallback((kind: VoiceBootKind) => {
+    const resetEngine = kind === "retry";
+    resetPiperVoiceBoot({ resetEngine });
+    voiceBootKindRef.current = kind;
+    setVoiceReady(false);
     setVoiceBootStatus("loading");
-    setVoiceBootProgress(0);
+    setVoiceBootProgress(kind === "switch" ? 55 : 0);
     setVoiceBootError(null);
     setVoiceBootPhase(null);
     setVoiceBootNonce((n) => n + 1);
   }, []);
 
+  const retryVoiceBoot = useCallback(() => {
+    beginVoiceBoot("retry");
+  }, [beginVoiceBoot]);
+
+  const handleTestVoice = useCallback(async () => {
+    if (!voiceReady) return;
+    if (!isAnnouncementAudioUnlocked()) {
+      const ok = await unlockAnnouncementAudio();
+      if (ok) {
+        setAudioUnlocked(true);
+        flushPendingAnnouncements();
+      }
+      return;
+    }
+    speakAnnouncement("Voice test.");
+  }, [voiceReady]);
+
+  const handleVoiceChange = useCallback(
+    (choice: PiperVoiceChoice) => {
+      writeSessionVoiceChoice(choice);
+      setActiveVoice(choice);
+      setActivePiperVoice(choice);
+      if (isPiperVoiceModelLoaded(choice)) {
+        setVoiceBootError(null);
+        setVoiceBootStatus("loading");
+        setVoiceBootProgress(100);
+        setVoiceReady(true);
+        setVoiceBootPhase(null);
+        return;
+      }
+      beginVoiceBoot("switch");
+    },
+    [beginVoiceBoot],
+  );
+
   useEffect(() => {
     setAudioUnlocked(isAnnouncementAudioUnlocked());
+    const stored = readSessionVoiceChoice();
+    if (stored) setActiveVoice(stored);
   }, []);
 
   useEffect(() => {
+    resetPiperVoiceBoot({ resetEngine: false });
     let cancelled = false;
     let raf = 0;
     let creepRaf = 0;
+    let warmupCreepRaf = 0;
     const started = performance.now();
 
     setVoiceReady(false);
@@ -269,55 +340,112 @@ export function QueueScreenClient({
       cancelAnimationFrame(creepRaf);
     };
 
+    const bootKind = voiceBootKindRef.current;
+    const preloadCreepMs =
+      bootKind === "switch" ? SWITCH_PRELOAD_CREEP_MS : PRELOAD_PROGRESS_CREEP_MS;
+    const warmupCreepMs = bootKind === "switch" ? SWITCH_WARMUP_CREEP_MS : WARMUP_PROGRESS_CREEP_MS;
+    const creepFrom = bootKind === "switch" ? 55 : PRELOAD_PROGRESS_FROM;
+    const creepTo = PRELOAD_PROGRESS_TO;
+
     const startPreloadCreep = () => {
       stopPreloadCreep();
       const creepStart = performance.now();
       const step = () => {
         if (cancelled) return;
-        const t = Math.min(1, (performance.now() - creepStart) / PRELOAD_PROGRESS_CREEP_MS);
-        const value =
-          PRELOAD_PROGRESS_FROM + t * (PRELOAD_PROGRESS_TO - PRELOAD_PROGRESS_FROM);
+        const t = Math.min(1, (performance.now() - creepStart) / preloadCreepMs);
+        const value = creepFrom + t * (creepTo - creepFrom);
         setVoiceBootProgress((prev) => Math.max(prev, value));
         if (t < 1) creepRaf = requestAnimationFrame(step);
       };
       creepRaf = requestAnimationFrame(step);
     };
 
-    tickProgress(12);
+    const stopWarmupCreep = () => {
+      cancelAnimationFrame(warmupCreepRaf);
+    };
+
+    const startWarmupCreep = () => {
+      stopWarmupCreep();
+      const creepStart = performance.now();
+      const step = () => {
+        if (cancelled) return;
+        const t = Math.min(1, (performance.now() - creepStart) / warmupCreepMs);
+        const value =
+          WARMUP_PROGRESS_FROM + t * (WARMUP_PROGRESS_TO - WARMUP_PROGRESS_FROM);
+        setVoiceBootProgress((prev) => Math.max(prev, value));
+        if (t < 1) warmupCreepRaf = requestAnimationFrame(step);
+      };
+      warmupCreepRaf = requestAnimationFrame(step);
+    };
+
+    const isSwitchBoot = bootKind === "switch";
+
+    if (!isSwitchBoot) tickProgress(12);
 
     void (async () => {
       try {
-        tickProgress(28);
-        const voiceRes = await fetch("/api/config/voice");
-        if (voiceRes.ok) {
-          const voiceCfg = (await voiceRes.json()) as { piper_voice?: string };
-          setActivePiperVoiceFromConfig(voiceCfg.piper_voice);
+        if (!isSwitchBoot) {
+          tickProgress(28);
+          let serverVoice: string | undefined;
+          const voiceRes = await fetch("/api/config/voice");
+          if (voiceRes.ok) {
+            const voiceCfg = (await voiceRes.json()) as { piper_voice?: string };
+            serverVoice = voiceCfg.piper_voice;
+          }
+          const choice = resolveLobbyVoiceChoice(serverVoice);
+          if (!cancelled) {
+            setActiveVoice(choice);
+            setActivePiperVoice(choice);
+          }
+          if (cancelled) return;
+          tickProgress(40);
+        } else {
+          const choice = resolveLobbyVoiceChoice(undefined);
+          if (!cancelled) {
+            setActiveVoice(choice);
+            setActivePiperVoice(choice);
+          }
+          if (cancelled) return;
         }
-        if (cancelled) return;
-        tickProgress(40);
         startPreloadCreep();
         await preloadPiperVoice({
           onPhase: (phase) => {
-            if (!cancelled) setVoiceBootPhase(phase);
+            if (cancelled) return;
+            setVoiceBootPhase(phase);
+            tickProgress(VOICE_PHASE_PROGRESS[phase]);
+            if (phase === "warmup") {
+              stopPreloadCreep();
+              startWarmupCreep();
+            }
           },
         });
         stopPreloadCreep();
+        stopWarmupCreep();
         if (cancelled) return;
-        tickProgress(88);
-        const elapsed = performance.now() - started;
-        const wait = Math.max(0, VOICE_BOOT_MIN_MS - elapsed);
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-        if (cancelled) return;
-        setVoiceBootProgress(100);
-        await new Promise((r) => setTimeout(r, 280));
-        if (cancelled) return;
+        if (!isSwitchBoot) {
+          tickProgress(88);
+          const elapsed = performance.now() - started;
+          const wait = Math.max(0, VOICE_BOOT_MIN_MS - elapsed);
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+          if (cancelled) return;
+          setVoiceBootProgress(100);
+          await new Promise((r) => setTimeout(r, 280));
+          if (cancelled) return;
+        } else {
+          setVoiceBootProgress(100);
+        }
         setVoiceReady(true);
-        for (const phrase of WARM_ANNOUNCEMENT_PHRASES) {
-          prefetchAnnouncement(phrase);
+        setVoiceBootPhase(null);
+        if (!isSwitchBoot) {
+          prefetchRemainingPiperVoiceModels();
+          for (const phrase of WARM_ANNOUNCEMENT_PHRASES) {
+            prefetchAnnouncement(phrase);
+          }
         }
       } catch (err) {
         console.error("[voice-boot]", err);
         stopPreloadCreep();
+        stopWarmupCreep();
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : "Voice engine failed to start";
         setVoiceBootError(msg);
@@ -330,6 +458,7 @@ export function QueueScreenClient({
       cancelled = true;
       cancelAnimationFrame(raf);
       stopPreloadCreep();
+      stopWarmupCreep();
     };
   }, [voiceBootNonce]);
 
@@ -627,21 +756,10 @@ export function QueueScreenClient({
     return result;
   }, [displayTickets, screen, counters, counterIdByCode, priorityIdByCode, labCounterId, labCode, imagingCounterId]);
 
-  if (!voiceReady) {
-    return (
-      <VoiceAgentLoader
-        progress={voiceBootProgress}
-        status={voiceBootStatus}
-        errorDetail={voiceBootError}
-        phaseLabel={
-          voiceBootStatus === "loading" && voiceBootPhase
-            ? PIPER_BOOT_PHASE_LABELS[voiceBootPhase]
-            : null
-        }
-        onRetry={voiceBootStatus === "error" ? retryVoiceBoot : undefined}
-      />
-    );
-  }
+  const voicePhaseLabel =
+    voiceBootStatus === "loading" && voiceBootPhase
+      ? PIPER_BOOT_PHASE_LABELS[voiceBootPhase]
+      : null;
 
   return (
     <div
@@ -654,7 +772,7 @@ export function QueueScreenClient({
         overflow: "hidden",
       }}
     >
-      {!audioUnlocked ? (
+      {voiceReady && !audioUnlocked ? (
         <EnableSoundBar
           onEnable={async () => {
             const ok = await unlockAnnouncementAudio();
@@ -665,7 +783,21 @@ export function QueueScreenClient({
           }}
         />
       ) : null}
-      <StatusBar />
+      <StatusBar
+        trailing={
+          <VoiceAgentDock
+            voiceReady={voiceReady}
+            status={voiceBootStatus}
+            progress={voiceBootProgress}
+            phaseLabel={voicePhaseLabel}
+            errorDetail={voiceBootError}
+            activeVoice={activeVoice}
+            onVoiceChange={handleVoiceChange}
+            onRetry={retryVoiceBoot}
+            onTestVoice={handleTestVoice}
+          />
+        }
+      />
       <div
         style={{
           padding: "12px 20px 16px",

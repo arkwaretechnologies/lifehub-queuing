@@ -2,6 +2,7 @@
 
 import {
   DEFAULT_PIPER_VOICE_CHOICE,
+  PIPER_VOICE_CHOICES,
   type PiperVoiceChoice,
   isPiperVoiceChoice,
   piperModelPublicPaths,
@@ -23,6 +24,8 @@ type PiperEngine = {
 let activeVoiceChoice: PiperVoiceChoice = DEFAULT_PIPER_VOICE_CHOICE;
 let enginePromise: Promise<PiperEngine> | null = null;
 let preloadPromise: Promise<void> | null = null;
+/** Piper `generate` must not run concurrently (parallel ONNX load can hang). */
+let warmChain: Promise<unknown> = Promise.resolve();
 const loadedVoices = new Set<string>();
 const audioBlobCache = new Map<string, Blob>();
 const MAX_CACHE = 120;
@@ -46,10 +49,29 @@ export function getActivePiperVoice(): PiperVoiceChoice {
 export function setActivePiperVoice(choice: PiperVoiceChoice): void {
   if (choice === activeVoiceChoice) return;
   activeVoiceChoice = choice;
-  enginePromise = null;
   preloadPromise = null;
-  loadedVoices.clear();
-  audioBlobCache.clear();
+}
+
+export function isPiperVoiceModelLoaded(choice: PiperVoiceChoice): boolean {
+  return loadedVoices.has(resolvePiperModelId(choice));
+}
+
+/** Clear in-flight boot so Retry / a new effect does not await a stale promise. */
+export function resetPiperVoiceBoot(options?: { resetEngine?: boolean }): void {
+  preloadPromise = null;
+  warmChain = Promise.resolve();
+  if (options?.resetEngine) {
+    enginePromise = null;
+  }
+}
+
+function runSerializedWarm<T>(work: () => Promise<T>): Promise<T> {
+  const run = warmChain.then(work, work);
+  warmChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 export function setActivePiperVoiceFromConfig(value: string | null | undefined): void {
@@ -152,7 +174,11 @@ async function getEngine(onPhase?: (phase: PiperBootPhase) => void): Promise<Pip
       onPhase?.("engine");
       const mod = await loadPiperModule();
       const voiceProvider = new mod.RemoteVoiceProvider({ baseUrl: LOCAL_VOICE_BASE });
-      return new mod.PiperWebEngine({ voiceProvider }) as PiperEngine;
+      // Must be single-threaded: /queue is crossOriginIsolated (COOP/COEP), so ORT would
+      // otherwise spawn one pthread worker per core, each re-importing the 46MB bundle
+      // via import.meta.url — session creation never resolves (stuck on "Warming up").
+      const onnxRuntime = new mod.OnnxWebRuntime({ basePath: "/onnx/", numThreads: 1 });
+      return new mod.PiperWebEngine({ voiceProvider, onnxRuntime }) as PiperEngine;
     })().catch((err) => {
       enginePromise = null;
       throw err;
@@ -161,7 +187,8 @@ async function getEngine(onPhase?: (phase: PiperBootPhase) => void): Promise<Pip
   return enginePromise;
 }
 
-const PRELOAD_TIMEOUT_MS = 180_000;
+/** First TV load: download + ONNX init + first generate can exceed 5 min on lobby hardware. */
+const PRELOAD_TIMEOUT_MS = 900_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -178,6 +205,45 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   });
 }
 
+/** Fetch ONNX + config into the browser HTTP cache (once per asset per browser). */
+export async function primePiperModelCache(choice: PiperVoiceChoice): Promise<void> {
+  if (typeof window === "undefined") return;
+  const modelId = resolvePiperModelId(choice);
+  const { onnx, config } = piperModelPublicPaths(modelId);
+  await Promise.all([fetch(config), fetch(onnx)]);
+}
+
+/** Warm a specific model without changing the active announcement voice. */
+export async function warmPiperVoiceModel(choice: PiperVoiceChoice): Promise<void> {
+  if (typeof window === "undefined") return;
+  const modelId = resolvePiperModelId(choice);
+  if (loadedVoices.has(modelId)) return;
+  await runSerializedWarm(async () => {
+    if (loadedVoices.has(modelId)) return;
+    const engine = await getEngine();
+    const response = await engine.generate("Ready.", modelId, 0);
+    loadedVoices.add(modelId);
+    void response.file;
+  });
+}
+
+/** Download remaining voices in the background after the active one is ready. */
+export function prefetchRemainingPiperVoiceModels(): void {
+  if (typeof window === "undefined") return;
+  void (async () => {
+    await new Promise((r) => setTimeout(r, 4000));
+    for (const choice of PIPER_VOICE_CHOICES) {
+      if (isPiperVoiceModelLoaded(choice)) continue;
+      try {
+        await primePiperModelCache(choice);
+        await warmPiperVoiceModel(choice);
+      } catch {
+        /* background optional */
+      }
+    }
+  })();
+}
+
 /** Warm engine + voice model using /public/piper assets. */
 export async function preloadPiperVoice(options?: PreloadPiperOptions): Promise<void> {
   if (typeof window === "undefined") return;
@@ -188,20 +254,27 @@ export async function preloadPiperVoice(options?: PreloadPiperOptions): Promise<
   const onPhase = options?.onPhase;
 
   if (!preloadPromise) {
+    const choice = getActivePiperVoice();
     preloadPromise = withTimeout(
-      (async () => {
+      runSerializedWarm(async () => {
         onPhase?.("model");
+        await primePiperModelCache(choice);
         const engine = await getEngine(onPhase);
         onPhase?.("warmup");
         const response = await engine.generate("Ready.", modelId, 0);
         loadedVoices.add(modelId);
         void response.file;
-      })(),
+      }),
       PRELOAD_TIMEOUT_MS,
-      "Piper model load timed out. Check network, then tap Retry.",
-    ).finally(() => {
-      preloadPromise = null;
-    });
+      "Voice warmup timed out. Download may be cached—tap Retry (warmup on TV can take 10+ minutes the first time).",
+    )
+      .catch((err) => {
+        enginePromise = null;
+        throw err;
+      })
+      .finally(() => {
+        preloadPromise = null;
+      });
   }
 
   await preloadPromise;

@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 
@@ -7,8 +8,11 @@ const DEFAULT_FACILITY_NAME = "LIFEHUB MEDICAL AND DIAGNOSTIC CENTER";
 
 export function StatusBar({
   facilityName = DEFAULT_FACILITY_NAME,
+  trailing,
 }: {
   facilityName?: string;
+  /** Shown to the left of the clock (e.g. voice agent dock). */
+  trailing?: ReactNode;
 }) {
   // null until mount: avoids hydration mismatch (server time ≠ client time / locale).
   const [now, setNow] = useState<Date | null>(null);
@@ -75,12 +79,37 @@ export function StatusBar({
         </div>
       </div>
 
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: 20, fontWeight: 600, color: "#fff", letterSpacing: 1, fontVariantNumeric: "tabular-nums" }}>
-          {timeText}
-        </div>
-        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", letterSpacing: 0.3, minHeight: "1.2em" }}>
-          {dateText}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+          flexShrink: 0,
+        }}
+      >
+        {trailing}
+        <div style={{ textAlign: "right" }}>
+          <div
+            style={{
+              fontSize: 20,
+              fontWeight: 600,
+              color: "#fff",
+              letterSpacing: 1,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {timeText}
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "rgba(255,255,255,0.45)",
+              letterSpacing: 0.3,
+              minHeight: "1.2em",
+            }}
+          >
+            {dateText}
+          </div>
         </div>
       </div>
     </div>

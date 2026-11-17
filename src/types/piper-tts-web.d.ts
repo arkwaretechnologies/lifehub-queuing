@@ -4,8 +4,13 @@ declare module "piper-tts-web" {
     destroy(): void;
   }
 
+  export class OnnxWebRuntime {
+    constructor(options?: { basePath?: string; numThreads?: number });
+    destroy(): void;
+  }
+
   export class PiperWebEngine {
-    constructor(options?: { voiceProvider?: RemoteVoiceProvider });
+    constructor(options?: { voiceProvider?: RemoteVoiceProvider; onnxRuntime?: OnnxWebRuntime });
     generate(
       text: string,
       voice: string,

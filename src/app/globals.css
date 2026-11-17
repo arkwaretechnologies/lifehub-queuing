@@ -145,6 +145,23 @@ body > * {
   color: rgba(255, 255, 255, 0.92) !important;
 }
 
+/* Lobby voice picker — dark menu; overrides the app-wide option/dropdown styles above. */
+.lh-voice-dock-dropdown.ant-select-dropdown {
+  border: 1px solid rgba(96, 165, 250, 0.3) !important;
+  box-shadow: 0 16px 40px rgba(2, 6, 23, 0.65) !important;
+}
+
+.lh-voice-dock-dropdown .ant-select-item-option-active {
+  background: rgba(30, 64, 175, 0.35) !important;
+  color: #e2e8f0 !important;
+}
+
+.lh-voice-dock-dropdown .ant-select-item-option-selected {
+  background: linear-gradient(135deg, #1e40af, #1e3a8a) !important;
+  color: #fff !important;
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.35);
+}
+
 .ant-progress-bg {
   background-image: linear-gradient(to bottom, #65b6d7, #3a87ad) !important;
   border-radius: 4px !important;

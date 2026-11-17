@@ -3,10 +3,11 @@
 type Props = {
   progress: number;
   status?: "loading" | "error";
+  errorDetail?: string | null;
   onRetry?: () => void;
 };
 
-export function VoiceAgentLoader({ progress, status = "loading", onRetry }: Props) {
+export function VoiceAgentLoader({ progress, status = "loading", errorDetail, onRetry }: Props) {
   const pct = Math.max(0, Math.min(100, Math.round(progress)));
 
   return (
@@ -46,8 +47,9 @@ export function VoiceAgentLoader({ progress, status = "loading", onRetry }: Prop
       </p>
       <p style={{ marginTop: 10, fontSize: 14, color: "rgba(255,255,255,0.5)", textAlign: "center", maxWidth: 420 }}>
         {status === "error"
-          ? "Queue announcements stay off until Piper loads from public/piper. Check assets and retry."
-          : "Preparing lobby announcements…"}
+          ? (errorDetail?.trim() ||
+              "Could not start the voice engine on this device. Check Wi‑Fi, then tap Retry (first load may take up to a minute).")
+          : "First load downloads the voice model (~60MB). This can take up to a minute."}
       </p>
       <div style={{ width: "min(420px, 100%)", marginTop: 36 }}>
         <div

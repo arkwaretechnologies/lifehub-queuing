@@ -114,17 +114,20 @@ export async function verifyPiperAssets(): Promise<void> {
 
   const modelId = activeModelId();
   const { onnx, config } = piperModelPublicPaths(modelId);
-  const [onnxRes, cfgRes] = await Promise.all([fetch(onnx), fetch(config)]);
+  // HEAD only — do not download the full ~60MB .onnx twice (verify + generate).
+  const [onnxRes, cfgRes] = await Promise.all([
+    fetch(onnx, { method: "HEAD" }),
+    fetch(config, { method: "HEAD" }),
+  ]);
   if (!onnxRes.ok || !cfgRes.ok) {
     throw new Error(
-      `Local voice model missing. Run: npm run download:piper-voices\nExpected: ${onnx} and ${config}`,
+      `Voice model missing on server (HTTP ${onnxRes.status}/${cfgRes.status}). Run: npm run download:piper-voices`,
     );
   }
 }
 
 async function loadPiperModule(): Promise<PiperModule> {
-  const load = new Function("return import('/piper-tts-web.js')") as () => Promise<PiperModule>;
-  return load();
+  return import(/* webpackIgnore: true */ "/piper-tts-web.js");
 }
 
 async function getEngine(): Promise<PiperEngine> {
@@ -142,6 +145,23 @@ async function getEngine(): Promise<PiperEngine> {
   return enginePromise;
 }
 
+const PRELOAD_TIMEOUT_MS = 180_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 /** Warm engine + voice model using /public/piper assets. */
 export async function preloadPiperVoice(): Promise<void> {
   if (typeof window === "undefined") return;
@@ -150,12 +170,16 @@ export async function preloadPiperVoice(): Promise<void> {
   if (loadedVoices.has(modelId) && enginePromise) return;
 
   if (!preloadPromise) {
-    preloadPromise = (async () => {
-      const engine = await getEngine();
-      const response = await engine.generate("Ready.", modelId, 0);
-      loadedVoices.add(modelId);
-      void response.file;
-    })().finally(() => {
+    preloadPromise = withTimeout(
+      (async () => {
+        const engine = await getEngine();
+        const response = await engine.generate("Ready.", modelId, 0);
+        loadedVoices.add(modelId);
+        void response.file;
+      })(),
+      PRELOAD_TIMEOUT_MS,
+      "Piper model load timed out. Check network, then tap Retry.",
+    ).finally(() => {
       preloadPromise = null;
     });
   }

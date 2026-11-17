@@ -134,6 +134,7 @@ export function QueueScreenClient({
   const [voiceReady, setVoiceReady] = useState(false);
   const [voiceBootProgress, setVoiceBootProgress] = useState(0);
   const [voiceBootStatus, setVoiceBootStatus] = useState<"loading" | "error">("loading");
+  const [voiceBootError, setVoiceBootError] = useState<string | null>(null);
   const [voiceBootNonce, setVoiceBootNonce] = useState(0);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const lastTicketSnapshotRef = useRef<Map<string, TicketSnapshot>>(new Map());
@@ -223,6 +224,7 @@ export function QueueScreenClient({
   const retryVoiceBoot = useCallback(() => {
     setVoiceBootStatus("loading");
     setVoiceBootProgress(0);
+    setVoiceBootError(null);
     setVoiceBootNonce((n) => n + 1);
   }, []);
 
@@ -237,8 +239,7 @@ export function QueueScreenClient({
 
     setVoiceReady(false);
     setVoiceBootStatus("loading");
-    setAnnouncementAudioUnlocked(false);
-    setAudioUnlocked(false);
+    setVoiceBootError(null);
 
     const tickProgress = (target: number) => {
       cancelAnimationFrame(raf);
@@ -283,6 +284,8 @@ export function QueueScreenClient({
       } catch (err) {
         console.error("[voice-boot]", err);
         if (cancelled) return;
+        const msg = err instanceof Error ? err.message : "Voice engine failed to start";
+        setVoiceBootError(msg);
         setVoiceBootStatus("error");
         setVoiceBootProgress(100);
       }
@@ -593,6 +596,7 @@ export function QueueScreenClient({
       <VoiceAgentLoader
         progress={voiceBootProgress}
         status={voiceBootStatus}
+        errorDetail={voiceBootError}
         onRetry={voiceBootStatus === "error" ? retryVoiceBoot : undefined}
       />
     );

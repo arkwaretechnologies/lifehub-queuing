@@ -11,6 +11,7 @@ import {
   ClockCircleOutlined,
   SettingOutlined,
   CheckCircleOutlined,
+  SoundOutlined,
 } from "@ant-design/icons";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
@@ -213,6 +214,40 @@ export default function AdminHomePage() {
                 </div>
                 <Typography.Paragraph style={{ margin: 0, color: "#6b7280" }}>
                   Upload videos, add YouTube links, and arrange playlists for the TV display.
+                </Typography.Paragraph>
+              </Card>
+            </LoadingLink>
+          </Col>
+
+          <Col xs={24} md={8}>
+            <LoadingLink href="/admin/voice" label="Opening Voice Settings…" style={{ display: "block", height: "100%" }}>
+              <Card
+                hoverable
+                style={{ height: "100%", borderRadius: 16, border: "1px solid #e5e7eb" }}
+                styles={{ body: { padding: 24 } }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+                  <div
+                    style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: 12,
+                      background: "linear-gradient(135deg, #6366f1, #4f46e5)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#fff",
+                      fontSize: 22,
+                    }}
+                  >
+                    <SoundOutlined />
+                  </div>
+                  <Typography.Title level={4} style={{ margin: 0 }}>
+                    Voice / Announcements
+                  </Typography.Title>
+                </div>
+                <Typography.Paragraph style={{ margin: 0, color: "#6b7280" }}>
+                  Choose HFC female or male Piper voice for lobby queue callouts.
                 </Typography.Paragraph>
               </Card>
             </LoadingLink>

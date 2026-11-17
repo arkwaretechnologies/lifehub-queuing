@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QueueScreen } from "@/config/types";
 import type { QueueAccent, QueueTicket } from "@/queue/types";
 import { QueueBoard } from "@/components/QueueBoard/QueueBoard";
@@ -15,11 +15,28 @@ import {
 } from "@/queue/labQueuePaidFilter";
 import { buildAnnouncementText, WARM_ANNOUNCEMENT_PHRASES } from "@/queue/announceText";
 import { resolveDisplayCounterId } from "@/queue/ticketRouting";
-import { cancelAnnouncement, prefetchAnnouncement, speakAnnouncement } from "@/queue/announceClient";
+import { EnableSoundBar } from "@/components/VoiceAgent/EnableSoundBar";
+import { VoiceAgentLoader } from "@/components/VoiceAgent/VoiceAgentLoader";
+import {
+  cancelAnnouncement,
+  flushPendingAnnouncements,
+  prefetchAnnouncement,
+  speakAnnouncement,
+} from "@/queue/announceClient";
+import {
+  isAnnouncementAudioUnlocked,
+  preloadPiperVoice,
+  setActivePiperVoiceFromConfig,
+  setAnnouncementAudioUnlocked,
+  unlockAnnouncementAudio,
+} from "@/queue/piperTts";
 import {
   announcementSpeakKey,
   pickTicketToAnnounce,
+  shouldAnnounceOnCalledAtChange,
+  snapshotActiveDept,
   ticketNeedsAnnouncement,
+  ticketSnapshotFromTicket,
   type TicketSnapshot,
 } from "@/queue/queueRecall";
 
@@ -31,6 +48,9 @@ const ACTIVE_STATUSES = ["Waiting", "Called", "Serving", "Completed", "Collected
 const QUEUE_TICKET_POLL_MS = 5_000;
 
 const SERVICE_ACCENTS: QueueAccent[] = ["gold", "purple", "red", "cyan", "orange", "pink"];
+
+/** Minimum time on the voice boot overlay so progress is readable. */
+const VOICE_BOOT_MIN_MS = 1400;
 
 type QueueTicketRow = {
   id: string;
@@ -111,7 +131,12 @@ export function QueueScreenClient({
   const [paidLabRequestIds, setPaidLabRequestIds] = useState<Set<string> | null>(
     () => new Set(initialPaidLabRequestIds),
   );
-  const lastTicketSnapshotRef = useRef<Map<string, { status: string; called_at: string | null }>>(new Map());
+  const [voiceReady, setVoiceReady] = useState(false);
+  const [voiceBootProgress, setVoiceBootProgress] = useState(0);
+  const [voiceBootStatus, setVoiceBootStatus] = useState<"loading" | "error">("loading");
+  const [voiceBootNonce, setVoiceBootNonce] = useState(0);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const lastTicketSnapshotRef = useRef<Map<string, TicketSnapshot>>(new Map());
   const lastSpokenKeyRef = useRef<string | null>(null);
   const paidLabRequestIdsRef = useRef<Set<string> | null>(paidLabRequestIds);
   const counterLabelByIdRef = useRef(new Map<string, string>());
@@ -195,21 +220,91 @@ export function QueueScreenClient({
     imagingCounterIdRef.current = imagingCounterId;
   }, [counterLabelById, labCounterId, imagingCounterId]);
 
-  useEffect(() => {
-    for (const phrase of WARM_ANNOUNCEMENT_PHRASES) {
-      prefetchAnnouncement(phrase);
-    }
+  const retryVoiceBoot = useCallback(() => {
+    setVoiceBootStatus("loading");
+    setVoiceBootProgress(0);
+    setVoiceBootNonce((n) => n + 1);
   }, []);
+
+  useEffect(() => {
+    setAudioUnlocked(isAnnouncementAudioUnlocked());
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let raf = 0;
+    const started = performance.now();
+
+    setVoiceReady(false);
+    setVoiceBootStatus("loading");
+    setAnnouncementAudioUnlocked(false);
+    setAudioUnlocked(false);
+
+    const tickProgress = (target: number) => {
+      cancelAnimationFrame(raf);
+      const step = () => {
+        if (cancelled) return;
+        setVoiceBootProgress((prev) => {
+          if (prev >= target) return prev;
+          const next = Math.min(target, prev + Math.max(0.8, (target - prev) * 0.12));
+          if (next < target) raf = requestAnimationFrame(step);
+          return next;
+        });
+      };
+      raf = requestAnimationFrame(step);
+    };
+
+    tickProgress(12);
+
+    void (async () => {
+      try {
+        tickProgress(28);
+        const voiceRes = await fetch("/api/config/voice");
+        if (voiceRes.ok) {
+          const voiceCfg = (await voiceRes.json()) as { piper_voice?: string };
+          setActivePiperVoiceFromConfig(voiceCfg.piper_voice);
+        }
+        if (cancelled) return;
+        tickProgress(40);
+        await preloadPiperVoice();
+        if (cancelled) return;
+        tickProgress(88);
+        const elapsed = performance.now() - started;
+        const wait = Math.max(0, VOICE_BOOT_MIN_MS - elapsed);
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        if (cancelled) return;
+        setVoiceBootProgress(100);
+        await new Promise((r) => setTimeout(r, 280));
+        if (cancelled) return;
+        setVoiceReady(true);
+        for (const phrase of WARM_ANNOUNCEMENT_PHRASES) {
+          prefetchAnnouncement(phrase);
+        }
+      } catch (err) {
+        console.error("[voice-boot]", err);
+        if (cancelled) return;
+        setVoiceBootStatus("error");
+        setVoiceBootProgress(100);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [voiceBootNonce]);
 
   function announceTicketIfNeeded(
     ticket: QueueTicket,
     prevSnap?: TicketSnapshot,
     options?: { fromRealtime?: boolean },
   ): void {
+    if (!voiceReady) return;
     const prev = prevSnap ?? lastTicketSnapshotRef.current.get(ticket.id);
     if (!ticketNeedsAnnouncement(ticket, prev, options)) return;
 
-    const speakKey = announcementSpeakKey(ticket.id, ticket.called_at!);
+    const activeDept = snapshotActiveDept(ticket.notes);
+    const speakKey = announcementSpeakKey(ticket.id, ticket.called_at, activeDept);
     if (lastSpokenKeyRef.current === speakKey) return;
 
     const text = buildAnnouncementText(
@@ -221,10 +316,7 @@ export function QueueScreenClient({
     prefetchAnnouncement(text);
     speakAnnouncement(text);
     lastSpokenKeyRef.current = speakKey;
-    lastTicketSnapshotRef.current.set(ticket.id, {
-      status: ticket.status,
-      called_at: ticket.called_at,
-    });
+    lastTicketSnapshotRef.current.set(ticket.id, ticketSnapshotFromTicket(ticket));
   }
 
   function prefetchIfNewlyCalled(
@@ -305,6 +397,8 @@ export function QueueScreenClient({
       );
       if (!rowId) return;
 
+      let refreshAfterPartialRow = false;
+
       setTickets((prev) => {
         const next = prev.slice();
         const idx = next.findIndex((t) => t.id === rowId);
@@ -316,28 +410,37 @@ export function QueueScreenClient({
 
         const prior = idx >= 0 ? next[idx] : null;
         const prevSnap = prior
-          ? { status: prior.status, called_at: prior.called_at }
+          ? ticketSnapshotFromTicket(prior)
           : lastTicketSnapshotRef.current.get(rowId);
         const mapped = normalizeTicketRow(rowNew, prior);
         if (!mapped || !watchSet.has(mapped.counter_id)) {
           if (idx >= 0) next.splice(idx, 1);
           return next;
         }
+        if (
+          payload.eventType === "UPDATE" &&
+          shouldAnnounceOnCalledAtChange(mapped.status) &&
+          !mapped.called_at
+        ) {
+          refreshAfterPartialRow = true;
+        }
         const visibleOnLabQueue =
           paidLabRequestIdsRef.current === null ||
           isLaboratoryTicketVisibleOnQueue(mapped, labCounterIdRef.current, paidLabRequestIdsRef.current);
-        if (!visibleOnLabQueue) {
-          if (idx >= 0) next.splice(idx, 1);
-          return next;
-        }
         if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
           prefetchIfNewlyCalled(mapped, prevSnap, { fromRealtime: true });
           announceTicketIfNeeded(mapped, prevSnap, { fromRealtime: true });
+        }
+        if (!visibleOnLabQueue) {
+          if (idx >= 0) next.splice(idx, 1);
+          return next;
         }
         if (idx >= 0) next[idx] = mapped;
         else next.push(mapped);
         return next;
       });
+
+      if (refreshAfterPartialRow) void refreshTickets();
     };
 
     const refreshTickets = async () => {
@@ -391,11 +494,11 @@ export function QueueScreenClient({
 
   // Backup path when poll refresh applies ticket changes (realtime handler is primary).
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const ticket = pickTicketToAnnounce(displayTickets, lastTicketSnapshotRef.current);
-    if (!ticket?.called_at) return;
+    if (typeof window === "undefined" || !voiceReady) return;
+    const ticket = pickTicketToAnnounce(tickets, lastTicketSnapshotRef.current);
+    if (!ticket) return;
     announceTicketIfNeeded(ticket);
-  }, [displayTickets, counterLabelById, labCounterId, imagingCounterId]);
+  }, [tickets, counterLabelById, labCounterId, imagingCounterId, voiceReady]);
 
   // Stop any in-flight announcement when the screen unmounts.
   useEffect(() => {
@@ -404,12 +507,15 @@ export function QueueScreenClient({
     };
   }, []);
 
-  // Maintain a minimal snapshot for transition detection.
+  // Seed snapshot once so page load does not announce every ticket; do not reset on poll.
+  const snapshotSeededRef = useRef(false);
   useEffect(() => {
-    const snap = new Map<string, { status: string; called_at: string | null }>();
-    displayTickets.forEach((t) => snap.set(t.id, { status: t.status, called_at: t.called_at }));
-    lastTicketSnapshotRef.current = snap;
-  }, [displayTickets]);
+    if (snapshotSeededRef.current) return;
+    snapshotSeededRef.current = true;
+    for (const t of initialTickets) {
+      lastTicketSnapshotRef.current.set(t.id, ticketSnapshotFromTicket(t));
+    }
+  }, [initialTickets]);
 
   const cards = useMemo(() => {
     const byDisplayCounterId = new Map<string, QueueTicket[]>();
@@ -482,6 +588,16 @@ export function QueueScreenClient({
     return result;
   }, [displayTickets, screen, counters, counterIdByCode, priorityIdByCode, labCounterId, labCode, imagingCounterId]);
 
+  if (!voiceReady) {
+    return (
+      <VoiceAgentLoader
+        progress={voiceBootProgress}
+        status={voiceBootStatus}
+        onRetry={voiceBootStatus === "error" ? retryVoiceBoot : undefined}
+      />
+    );
+  }
+
   return (
     <div
       style={{
@@ -493,6 +609,17 @@ export function QueueScreenClient({
         overflow: "hidden",
       }}
     >
+      {!audioUnlocked ? (
+        <EnableSoundBar
+          onEnable={async () => {
+            const ok = await unlockAnnouncementAudio();
+            if (ok) {
+              setAudioUnlocked(true);
+              flushPendingAnnouncements();
+            }
+          }}
+        />
+      ) : null}
       <StatusBar />
       <div
         style={{

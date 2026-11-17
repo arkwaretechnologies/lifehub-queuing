@@ -38,6 +38,12 @@ export type PrinterSettings = {
 
 export type MediaPlaylistItemType = "video" | "youtube" | "image";
 
+export type QueueVoiceSettings = {
+  id: string;
+  piper_voice: "hfc_female_medium" | "hfc_male_medium";
+  updated_at: string;
+};
+
 export type MediaPlaylistItem = {
   id: string;
   playlist_id: string;

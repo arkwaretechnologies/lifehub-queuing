@@ -1,19 +1,25 @@
 "use client";
 
-import { announcementUrlForText } from "@/queue/announceText";
+import {
+  isAnnouncementAudioUnlocked,
+  prefetchPiperSpeech,
+  preloadPiperVoice,
+  synthesizePiperSpeech,
+} from "@/queue/piperTts";
 
 export type AnnouncementVoice = "primary" | "bisaya";
 
 const prefetchedTexts = new Set<string>();
+const pendingClips: AnnouncementClip[] = [];
 
 export type AnnouncementClip = {
   text: string;
-  /** Defaults to "primary" (the English voice). */
   voice?: AnnouncementVoice;
 };
 
 let activeAudio: HTMLAudioElement | null = null;
 let activeSequenceId = 0;
+let piperReadyPromise: Promise<void> | null = null;
 
 function stopActive(): void {
   if (!activeAudio) return;
@@ -48,7 +54,17 @@ function speakViaSynthesis(text: string): Promise<void> {
   });
 }
 
-/** Warm server + browser cache without playing audio. Safe to call repeatedly. */
+function ensurePiperReady(): Promise<void> {
+  if (!piperReadyPromise) {
+    piperReadyPromise = preloadPiperVoice().catch((err) => {
+      piperReadyPromise = null;
+      throw err;
+    });
+  }
+  return piperReadyPromise;
+}
+
+/** Warm Piper (/public/piper) without playing audio. */
 export function prefetchAnnouncement(text: string, voice?: AnnouncementVoice): void {
   if (typeof window === "undefined") return;
   const trimmed = text.trim();
@@ -57,25 +73,26 @@ export function prefetchAnnouncement(text: string, voice?: AnnouncementVoice): v
   if (prefetchedTexts.has(cacheKey)) return;
   prefetchedTexts.add(cacheKey);
 
-  const url = announcementUrlForText(trimmed, voice);
-  void fetch(url).catch(() => {
-    prefetchedTexts.delete(cacheKey);
-  });
+  void ensurePiperReady()
+    .then(() => prefetchPiperSpeech(trimmed))
+    .catch(() => {
+      prefetchedTexts.delete(cacheKey);
+    });
 }
 
-function playClip(clip: AnnouncementClip): Promise<void> {
-  const url = announcementUrlForText(clip.text, clip.voice);
+function playBlobAndWait(blob: Blob): Promise<void> {
+  const url = URL.createObjectURL(blob);
 
   return new Promise<void>((resolve, reject) => {
     const audio = new Audio(url);
     audio.preload = "auto";
-    audio.load();
     activeAudio = audio;
 
     let settled = false;
     const finish = (ok: boolean, err?: unknown) => {
       if (settled) return;
       settled = true;
+      URL.revokeObjectURL(url);
       if (activeAudio === audio) activeAudio = null;
       if (ok) resolve();
       else reject(err instanceof Error ? err : new Error("Audio playback failed"));
@@ -91,10 +108,35 @@ function playClip(clip: AnnouncementClip): Promise<void> {
   });
 }
 
+function playClip(clip: AnnouncementClip): Promise<void> {
+  const text = clip.text.trim();
+
+  return ensurePiperReady()
+    .then(() => synthesizePiperSpeech(text))
+    .then((blob) => playBlobAndWait(blob));
+}
+
+function runSequence(list: AnnouncementClip[]): void {
+  cancelAnnouncement();
+  const sequenceId = ++activeSequenceId;
+
+  void (async () => {
+    for (const clip of list) {
+      if (sequenceId !== activeSequenceId) return;
+      try {
+        await playClip(clip);
+      } catch (err) {
+        console.warn("[voice] Piper playback failed, using browser voice", err);
+        if (sequenceId !== activeSequenceId) return;
+        await speakViaSynthesis(clip.text);
+      }
+    }
+  })();
+}
+
 /**
- * Speak a sequence of announcement clips back-to-back. Any in-flight sequence
- * is interrupted before the new one starts. Each clip falls back to the
- * browser's SpeechSynthesis if ElevenLabs / autoplay fails for that clip.
+ * Speak announcements with Piper (public/piper). Falls back to browser
+ * speechSynthesis when Piper or autoplay fails. Requires one-time audio unlock.
  */
 export function speakAnnouncement(clips: AnnouncementClip[] | string): void {
   if (typeof window === "undefined") return;
@@ -105,22 +147,21 @@ export function speakAnnouncement(clips: AnnouncementClip[] | string): void {
       : clips.filter((c) => c && c.text && c.text.trim().length > 0);
   if (!list.length) return;
 
-  cancelAnnouncement();
-  const sequenceId = ++activeSequenceId;
-
-  void (async () => {
+  if (!isAnnouncementAudioUnlocked()) {
     for (const clip of list) {
-      if (sequenceId !== activeSequenceId) return; // superseded by a newer call
-      try {
-        await playClip(clip);
-      } catch {
-        if (sequenceId !== activeSequenceId) return;
-        // Fall back to browser TTS for this clip and wait for it to finish so
-        // the next clip in the sequence doesn't overlap.
-        await speakViaSynthesis(clip.text);
-      }
+      if (!pendingClips.some((p) => p.text === clip.text)) pendingClips.push(clip);
     }
-  })();
+    return;
+  }
+
+  runSequence(list);
+}
+
+/** Call after staff taps Enable sound — plays any announcements that arrived while locked. */
+export function flushPendingAnnouncements(): void {
+  if (!isAnnouncementAudioUnlocked() || pendingClips.length === 0) return;
+  const list = pendingClips.splice(0, pendingClips.length);
+  runSequence(list);
 }
 
 export function cancelAnnouncement(): void {

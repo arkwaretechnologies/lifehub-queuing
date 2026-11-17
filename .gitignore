@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# piper-tts-web copies from node_modules (postinstall / copy:piper)
+/public/onnx/
+/public/worker/
+/public/piper-tts-web.js
+
+# voice weights (npm run download:piper-voices) — too large for GitHub
+/public/piper/models/**/*.onnx
+/public/piper/models/**/ryan/

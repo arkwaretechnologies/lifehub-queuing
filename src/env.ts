@@ -5,22 +5,33 @@ const schema = z.object({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1).optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
   ADMIN_SESSION_SECRET: z.string().min(16).optional(),
+  JWT_SECRET: z.string().min(16).optional(),
   ELEVENLABS_API_KEY: z.string().min(1).optional(),
   ELEVENLABS_VOICE_ID: z.string().min(1).optional(),
 });
 
 const parsed = schema.safeParse(process.env);
 
-export const env = parsed.success
+const baseEnv = parsed.success
   ? parsed.data
   : {
       NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
       NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
       ADMIN_SESSION_SECRET: process.env.ADMIN_SESSION_SECRET,
+      JWT_SECRET: process.env.JWT_SECRET,
       ELEVENLABS_API_KEY: process.env.ELEVENLABS_API_KEY,
       ELEVENLABS_VOICE_ID: process.env.ELEVENLABS_VOICE_ID,
     };
+
+/** Admin cookie signing: prefer ADMIN_SESSION_SECRET, else legacy JWT_SECRET from LifeHub CMS. */
+const adminSessionSecret =
+  baseEnv.ADMIN_SESSION_SECRET?.trim() || baseEnv.JWT_SECRET?.trim() || undefined;
+
+export const env = {
+  ...baseEnv,
+  ADMIN_SESSION_SECRET: adminSessionSecret,
+};
 
 export function requireEnv<K extends keyof typeof env>(key: K): NonNullable<(typeof env)[K]> {
   const value = env[key];

@@ -28,12 +28,24 @@ export async function labRequestIdsWithLabSales(
   return { ids, error: null };
 }
 
+/** Visit-linked lab tickets on the LAB counter: show when paid or already called/active (not Waiting). */
+export function labVisitTicketVisibleOnTv(
+  ticket: { lab_request_id?: string | null; status?: string | null },
+  paidLabRequestIds: Set<string>,
+): boolean {
+  const reqId = String(ticket.lab_request_id ?? "").trim();
+  if (!reqId) return true;
+  if (paidLabRequestIds.has(reqId)) return true;
+  return String(ticket.status ?? "Waiting") !== "Waiting";
+}
+
 /**
  * Laboratory TV queue: hide LAB tickets for visit-linked lab orders until `lab_sales` exists.
  * Tickets without `lab_request_id` are always shown (same as LifeHub Lab Appointments).
+ * Unpaid visit-linked tickets still appear once staff call them (status is not Waiting).
  */
 export async function filterLaboratoryTicketsForPaidDisplay<
-  T extends { counter_id: string; lab_request_id?: string | null },
+  T extends { counter_id: string; lab_request_id?: string | null; status?: string | null },
 >(supabase: SupabaseClient, tickets: T[], laboratoryCounterId: string | null): Promise<{ rows: T[]; error: string | null }> {
   if (!laboratoryCounterId) return { rows: tickets, error: null };
 
@@ -51,30 +63,32 @@ export async function filterLaboratoryTicketsForPaidDisplay<
   );
   if (error) return { rows: [], error };
 
-  const visible = withReq.filter((t) => paidIds.has(String(t.lab_request_id ?? "").trim()));
+  const visible = withReq.filter((t) =>
+    labVisitTicketVisibleOnTv(t, paidIds),
+  );
   return { rows: [...otherTickets, ...withoutReq, ...visible], error: null };
 }
 
 /** Client-side mirror of `filterLaboratoryTicketsForPaidDisplay` when `paidLabRequestIds` is loaded. */
 export function isLaboratoryTicketVisibleOnQueue(
-  ticket: { counter_id: string; lab_request_id?: string | null },
+  ticket: { counter_id: string; lab_request_id?: string | null; status?: string | null },
   laboratoryCounterId: string | null,
   paidLabRequestIds: Set<string>,
 ): boolean {
   if (!laboratoryCounterId || String(ticket.counter_id) !== laboratoryCounterId) return true;
-  const reqId = String(ticket.lab_request_id ?? "").trim();
-  if (!reqId) return true;
-  return paidLabRequestIds.has(reqId);
+  return labVisitTicketVisibleOnTv(ticket, paidLabRequestIds);
 }
 
 export function filterTicketsForLaboratoryPaidDisplay<
-  T extends { counter_id: string; lab_request_id?: string | null },
+  T extends { counter_id: string; lab_request_id?: string | null; status?: string | null },
 >(tickets: T[], laboratoryCounterId: string | null, paidLabRequestIds: Set<string> | null): T[] {
   if (!laboratoryCounterId) return tickets;
   if (!paidLabRequestIds) {
     return tickets.filter((t) => {
       if (String(t.counter_id) !== laboratoryCounterId) return true;
-      return !String(t.lab_request_id ?? "").trim();
+      const reqId = String(t.lab_request_id ?? "").trim();
+      if (!reqId) return true;
+      return String(t.status ?? "Waiting") !== "Waiting";
     });
   }
   return tickets.filter((t) => isLaboratoryTicketVisibleOnQueue(t, laboratoryCounterId, paidLabRequestIds));

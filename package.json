@@ -4,9 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/copy-piper-assets.mjs && node scripts/download-piper-voice.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "copy:piper": "node scripts/copy-piper-assets.mjs",
+    "download:piper-voice": "node scripts/download-piper-voice.mjs",
+    "download:piper-voices": "node scripts/download-piper-voice.mjs",
+    "postinstall": "node scripts/copy-piper-assets.mjs"
   },
   "dependencies": {
     "@ant-design/cssinjs": "^2.1.2",
@@ -16,6 +22,7 @@
     "antd": "^6.3.5",
     "bcryptjs": "^3.0.3",
     "next": "16.2.2",
+    "piper-tts-web": "^1.1.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zod": "^4.3.6",
@@ -29,6 +36,7 @@
     "@types/web-bluetooth": "^0.0.21",
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

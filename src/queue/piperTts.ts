@@ -127,7 +127,8 @@ export async function verifyPiperAssets(): Promise<void> {
 }
 
 async function loadPiperModule(): Promise<PiperModule> {
-  return import(/* webpackIgnore: true */ "/piper-tts-web.js");
+  const href = "/piper-tts-web.js";
+  return import(/* webpackIgnore: true */ href);
 }
 
 async function getEngine(): Promise<PiperEngine> {

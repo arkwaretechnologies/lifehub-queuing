@@ -164,6 +164,69 @@ async function loadPiperModule(): Promise<PiperModule> {
 
 export type PreloadPiperOptions = {
   onPhase?: (phase: PiperBootPhase) => void;
+  /** 0..1 fraction of the active voice's .onnx downloaded (real bytes). */
+  onDownloadProgress?: (fraction: number) => void;
+};
+
+type ByteProgress = (loaded: number, total: number) => void;
+
+/**
+ * One download per asset URL, shared by priming, background prefetch, voice switches and the
+ * engine's RemoteVoiceProvider. Bodies are fully read (unread fetch bodies stall and hold
+ * connections open — the cause of "stuck at 72%" when switching voices on slower networks).
+ * Resolves to parsed JSON for .json, otherwise a blob: URL (same contract as piper's FetchProvider).
+ */
+const assetDownloads = new Map<string, Promise<unknown>>();
+const assetProgressListeners = new Map<string, Set<ByteProgress>>();
+
+function downloadAsset(url: string, onProgress?: ByteProgress): Promise<unknown> {
+  if (onProgress) {
+    let set = assetProgressListeners.get(url);
+    if (!set) {
+      set = new Set();
+      assetProgressListeners.set(url, set);
+    }
+    set.add(onProgress);
+  }
+
+  let pending = assetDownloads.get(url);
+  if (!pending) {
+    pending = (async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Could not fetch ${url} (HTTP ${res.status})`);
+      if (url.endsWith(".json")) return res.json();
+
+      const total = Number(res.headers.get("content-length")) || 0;
+      if (!res.body) return URL.createObjectURL(await res.blob());
+
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let loaded = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.byteLength;
+        assetProgressListeners.get(url)?.forEach((cb) => cb(loaded, total));
+      }
+      return URL.createObjectURL(new Blob(chunks as BlobPart[]));
+    })();
+    assetDownloads.set(url, pending);
+    pending.then(
+      () => assetProgressListeners.delete(url),
+      () => {
+        assetDownloads.delete(url);
+        assetProgressListeners.delete(url);
+      },
+    );
+  }
+  return pending;
+}
+
+/** Drop-in for piper-tts-web's FetchProvider, backed by the shared download map. */
+const sharedAssetProvider = {
+  fetch: (url: string) => downloadAsset(url),
+  destroy: () => {},
 };
 
 async function getEngine(onPhase?: (phase: PiperBootPhase) => void): Promise<PiperEngine> {
@@ -173,7 +236,10 @@ async function getEngine(onPhase?: (phase: PiperBootPhase) => void): Promise<Pip
       await verifyPiperAssets();
       onPhase?.("engine");
       const mod = await loadPiperModule();
-      const voiceProvider = new mod.RemoteVoiceProvider({ baseUrl: LOCAL_VOICE_BASE });
+      const voiceProvider = new mod.RemoteVoiceProvider({
+        baseUrl: LOCAL_VOICE_BASE,
+        provider: sharedAssetProvider,
+      });
       // Must be single-threaded: /queue is crossOriginIsolated (COOP/COEP), so ORT would
       // otherwise spawn one pthread worker per core, each re-importing the 46MB bundle
       // via import.meta.url — session creation never resolves (stuck on "Warming up").
@@ -205,12 +271,26 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   });
 }
 
-/** Fetch ONNX + config into the browser HTTP cache (once per asset per browser). */
-export async function primePiperModelCache(choice: PiperVoiceChoice): Promise<void> {
+/** Download ONNX + config once (shared with the engine, so it never re-downloads). */
+export async function primePiperModelCache(
+  choice: PiperVoiceChoice,
+  onProgress?: (fraction: number) => void,
+): Promise<void> {
   if (typeof window === "undefined") return;
   const modelId = resolvePiperModelId(choice);
   const { onnx, config } = piperModelPublicPaths(modelId);
-  await Promise.all([fetch(config), fetch(onnx)]);
+  await Promise.all([
+    downloadAsset(config),
+    downloadAsset(
+      onnx,
+      onProgress
+        ? (loaded, total) => {
+            if (total > 0) onProgress(Math.min(1, loaded / total));
+          }
+        : undefined,
+    ),
+  ]);
+  onProgress?.(1);
 }
 
 /** Warm a specific model without changing the active announcement voice. */
@@ -258,7 +338,7 @@ export async function preloadPiperVoice(options?: PreloadPiperOptions): Promise<
     preloadPromise = withTimeout(
       runSerializedWarm(async () => {
         onPhase?.("model");
-        await primePiperModelCache(choice);
+        await primePiperModelCache(choice, options?.onDownloadProgress);
         const engine = await getEngine(onPhase);
         onPhase?.("warmup");
         const response = await engine.generate("Ready.", modelId, 0);

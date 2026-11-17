@@ -1,6 +1,11 @@
 declare module "piper-tts-web" {
   export class RemoteVoiceProvider {
-    constructor(options?: { baseUrl?: string; separator?: string });
+    constructor(options?: {
+      baseUrl?: string;
+      separator?: string;
+      /** Must resolve .json URLs to parsed JSON and other URLs to blob: URLs. */
+      provider?: { fetch(url: string): Promise<unknown>; destroy(): void };
+    });
     destroy(): void;
   }
 

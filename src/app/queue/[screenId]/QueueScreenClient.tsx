@@ -418,6 +418,13 @@ export function QueueScreenClient({
               startWarmupCreep();
             }
           },
+          // Real bytes from the shared downloader: drives the dial from 40% → 70% during download.
+          onDownloadProgress: (fraction) => {
+            if (cancelled) return;
+            stopPreloadCreep();
+            const value = PRELOAD_PROGRESS_FROM + fraction * (70 - PRELOAD_PROGRESS_FROM);
+            setVoiceBootProgress((prev) => Math.max(prev, value));
+          },
         });
         stopPreloadCreep();
         stopWarmupCreep();

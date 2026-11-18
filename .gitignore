@@ -47,4 +47,6 @@ next-env.d.ts
 
 # voice weights (npm run download:piper-voices) — too large for GitHub
 /public/piper/models/**/*.onnx
-/public/piper/models/**/ryan/
+/public/piper/models/**/*.part
+# old unused ryan-high experiment (ryan medium is a catalog voice)
+/public/piper/models/**/ryan/high/

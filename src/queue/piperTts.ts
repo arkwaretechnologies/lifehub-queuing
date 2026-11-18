@@ -2,12 +2,13 @@
 
 import {
   DEFAULT_PIPER_VOICE_CHOICE,
-  PIPER_VOICE_CHOICES,
   type PiperVoiceChoice,
   isPiperVoiceChoice,
   piperModelPublicPaths,
   resolvePiperModelId,
 } from "@/queue/piperVoices";
+import { createVoiceAudio } from "@/queue/voiceVolume";
+import { playChimeLead } from "@/queue/chime";
 
 const UNLOCK_KEY = "lh-queue-voice-unlocked";
 export const TTS_UNLOCK_PHRASE = "Queue announcements are enabled.";
@@ -92,7 +93,11 @@ export function setAnnouncementAudioUnlocked(unlocked: boolean): void {
 /** User gesture: unlock browser autoplay and confirm Piper playback. */
 export async function unlockAnnouncementAudio(): Promise<boolean> {
   try {
-    const blob = await synthesizePiperSpeech(TTS_UNLOCK_PHRASE);
+    // Chime starts inside the click (counts as the autoplay gesture); speech is generated meanwhile.
+    const blobPromise = synthesizePiperSpeech(TTS_UNLOCK_PHRASE);
+    blobPromise.catch(() => {});
+    await playChimeLead();
+    const blob = await blobPromise;
     await playUnlockBlob(blob);
     setAnnouncementAudioUnlocked(true);
     return true;
@@ -104,13 +109,12 @@ export async function unlockAnnouncementAudio(): Promise<boolean> {
 
 let currentUnlockAudio: HTMLAudioElement | null = null;
 
-function playUnlockBlob(blob: Blob): Promise<void> {
+async function playUnlockBlob(blob: Blob): Promise<void> {
+  const { audio, release } = await createVoiceAudio(blob);
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
     currentUnlockAudio = audio;
     const finish = (ok: boolean) => {
-      URL.revokeObjectURL(url);
+      release();
       if (currentUnlockAudio === audio) currentUnlockAudio = null;
       if (ok) resolve();
       else reject(new Error("Playback blocked"));
@@ -293,35 +297,35 @@ export async function primePiperModelCache(
   onProgress?.(1);
 }
 
-/** Warm a specific model without changing the active announcement voice. */
-export async function warmPiperVoiceModel(choice: PiperVoiceChoice): Promise<void> {
-  if (typeof window === "undefined") return;
-  const modelId = resolvePiperModelId(choice);
-  if (loadedVoices.has(modelId)) return;
-  await runSerializedWarm(async () => {
-    if (loadedVoices.has(modelId)) return;
-    const engine = await getEngine();
-    const response = await engine.generate("Ready.", modelId, 0);
-    loadedVoices.add(modelId);
-    void response.file;
-  });
-}
+/**
+ * Each loaded voice keeps its ~63 MB model blob plus an ONNX session in memory. With 12 voices,
+ * auditioning them all on a lobby TV would exhaust RAM, so at most this many stay resident.
+ */
+const MAX_RESIDENT_VOICES = 2;
 
-/** Download remaining voices in the background after the active one is ready. */
-export function prefetchRemainingPiperVoiceModels(): void {
-  if (typeof window === "undefined") return;
-  void (async () => {
-    await new Promise((r) => setTimeout(r, 4000));
-    for (const choice of PIPER_VOICE_CHOICES) {
-      if (isPiperVoiceModelLoaded(choice)) continue;
-      try {
-        await primePiperModelCache(choice);
-        await warmPiperVoiceModel(choice);
-      } catch {
-        /* background optional */
-      }
-    }
-  })();
+/**
+ * Free every loaded voice except `keepModelId`. piper-tts-web holds ONNX sessions privately inside
+ * the engine, so the engine is dropped (a fresh one is built on next use; the engine bundle and
+ * phonemizer files come from the HTTP cache).
+ */
+function evictVoicesExcept(keepModelId: string): void {
+  enginePromise = null;
+  for (const modelId of loadedVoices) {
+    if (modelId === keepModelId) continue;
+    const { onnx } = piperModelPublicPaths(modelId);
+    const pending = assetDownloads.get(onnx);
+    assetDownloads.delete(onnx);
+    void pending?.then(
+      (url) => {
+        if (typeof url === "string" && url.startsWith("blob:")) URL.revokeObjectURL(url);
+      },
+      () => {},
+    );
+  }
+  loadedVoices.clear();
+  for (const key of [...audioBlobCache.keys()]) {
+    if (!key.startsWith(`${keepModelId}:`)) audioBlobCache.delete(key);
+  }
 }
 
 /** Warm engine + voice model using /public/piper assets. */
@@ -335,6 +339,9 @@ export async function preloadPiperVoice(options?: PreloadPiperOptions): Promise<
 
   if (!preloadPromise) {
     const choice = getActivePiperVoice();
+    if (!loadedVoices.has(modelId) && loadedVoices.size >= MAX_RESIDENT_VOICES) {
+      evictVoicesExcept(modelId);
+    }
     preloadPromise = withTimeout(
       runSerializedWarm(async () => {
         onPhase?.("model");

@@ -27,7 +27,6 @@ import {
   isAnnouncementAudioUnlocked,
   isPiperVoiceModelLoaded,
   PIPER_BOOT_PHASE_LABELS,
-  prefetchRemainingPiperVoiceModels,
   preloadPiperVoice,
   resetPiperVoiceBoot,
   setActivePiperVoice,
@@ -41,6 +40,14 @@ import {
   resolveLobbyVoiceChoice,
   writeSessionVoiceChoice,
 } from "@/queue/voiceSession";
+import {
+  DEFAULT_VOICE_ECHO,
+  DEFAULT_VOICE_VOLUME,
+  initVoiceEcho,
+  initVoiceVolume,
+  setVoiceEcho,
+  setVoiceVolume,
+} from "@/queue/voiceVolume";
 import {
   announcementSpeakKey,
   pickTicketToAnnounce,
@@ -172,6 +179,8 @@ export function QueueScreenClient({
   // Start with the server-safe default; localStorage is read after mount (avoids hydration mismatch).
   const [activeVoice, setActiveVoice] = useState<PiperVoiceChoice>(DEFAULT_PIPER_VOICE_CHOICE);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [voiceVolume, setVoiceVolumeState] = useState(DEFAULT_VOICE_VOLUME);
+  const [voiceEcho, setVoiceEchoState] = useState(DEFAULT_VOICE_ECHO);
   const lastTicketSnapshotRef = useRef<Map<string, TicketSnapshot>>(new Map());
   const lastSpokenKeyRef = useRef<string | null>(null);
   const paidLabRequestIdsRef = useRef<Set<string> | null>(paidLabRequestIds);
@@ -285,6 +294,16 @@ export function QueueScreenClient({
     speakAnnouncement("Voice test.");
   }, [voiceReady]);
 
+  const handleEchoChange = useCallback((value: number) => {
+    setVoiceEcho(value);
+    setVoiceEchoState(value);
+  }, []);
+
+  const handleVolumeChange = useCallback((value: number) => {
+    setVoiceVolume(value);
+    setVoiceVolumeState(value);
+  }, []);
+
   const handleVoiceChange = useCallback(
     (choice: PiperVoiceChoice) => {
       writeSessionVoiceChoice(choice);
@@ -307,6 +326,8 @@ export function QueueScreenClient({
     setAudioUnlocked(isAnnouncementAudioUnlocked());
     const stored = readSessionVoiceChoice();
     if (stored) setActiveVoice(stored);
+    setVoiceVolumeState(initVoiceVolume());
+    setVoiceEchoState(initVoiceEcho());
   }, []);
 
   useEffect(() => {
@@ -444,7 +465,6 @@ export function QueueScreenClient({
         setVoiceReady(true);
         setVoiceBootPhase(null);
         if (!isSwitchBoot) {
-          prefetchRemainingPiperVoiceModels();
           for (const phrase of WARM_ANNOUNCEMENT_PHRASES) {
             prefetchAnnouncement(phrase);
           }
@@ -802,6 +822,10 @@ export function QueueScreenClient({
             onVoiceChange={handleVoiceChange}
             onRetry={retryVoiceBoot}
             onTestVoice={handleTestVoice}
+            volume={voiceVolume}
+            onVolumeChange={handleVolumeChange}
+            echo={voiceEcho}
+            onEchoChange={handleEchoChange}
           />
         }
       />

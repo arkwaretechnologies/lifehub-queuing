@@ -6,6 +6,8 @@ import {
   preloadPiperVoice,
   synthesizePiperSpeech,
 } from "@/queue/piperTts";
+import { createVoiceAudio, getVoiceVolume } from "@/queue/voiceVolume";
+import { playChimeLead, preloadChime, stopChime } from "@/queue/chime";
 
 export type AnnouncementVoice = "primary" | "bisaya";
 
@@ -43,7 +45,7 @@ function speakViaSynthesis(text: string): Promise<void> {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 1;
       utterance.pitch = 1;
-      utterance.volume = 1;
+      utterance.volume = Math.min(1, getVoiceVolume());
       utterance.onend = () => resolve();
       utterance.onerror = () => resolve();
       window.speechSynthesis.cancel();
@@ -67,6 +69,7 @@ function ensurePiperReady(): Promise<void> {
 /** Warm Piper (/public/piper) without playing audio. */
 export function prefetchAnnouncement(text: string, voice?: AnnouncementVoice): void {
   if (typeof window === "undefined") return;
+  void preloadChime().catch(() => {});
   const trimmed = text.trim();
   if (!trimmed) return;
   const cacheKey = voice ? `${voice}:${trimmed}` : trimmed;
@@ -80,11 +83,10 @@ export function prefetchAnnouncement(text: string, voice?: AnnouncementVoice): v
     });
 }
 
-function playBlobAndWait(blob: Blob): Promise<void> {
-  const url = URL.createObjectURL(blob);
+async function playBlobAndWait(blob: Blob): Promise<void> {
+  const { audio, release } = await createVoiceAudio(blob);
 
   return new Promise<void>((resolve, reject) => {
-    const audio = new Audio(url);
     audio.preload = "auto";
     activeAudio = audio;
 
@@ -92,7 +94,7 @@ function playBlobAndWait(blob: Blob): Promise<void> {
     const finish = (ok: boolean, err?: unknown) => {
       if (settled) return;
       settled = true;
-      URL.revokeObjectURL(url);
+      release();
       if (activeAudio === audio) activeAudio = null;
       if (ok) resolve();
       else reject(err instanceof Error ? err : new Error("Audio playback failed"));
@@ -108,12 +110,9 @@ function playBlobAndWait(blob: Blob): Promise<void> {
   });
 }
 
-function playClip(clip: AnnouncementClip): Promise<void> {
+function synthesizeClip(clip: AnnouncementClip): Promise<Blob> {
   const text = clip.text.trim();
-
-  return ensurePiperReady()
-    .then(() => synthesizePiperSpeech(text))
-    .then((blob) => playBlobAndWait(blob));
+  return ensurePiperReady().then(() => synthesizePiperSpeech(text));
 }
 
 function runSequence(list: AnnouncementClip[]): void {
@@ -121,10 +120,21 @@ function runSequence(list: AnnouncementClip[]): void {
   const sequenceId = ++activeSequenceId;
 
   void (async () => {
-    for (const clip of list) {
+    // Generate the first clip while the chime plays, so the chime→speech gap stays at
+    // CHIME_LEAD_MS instead of growing by synthesis time.
+    const firstBlob = synthesizeClip(list[0]);
+    firstBlob.catch(() => {
+      /* handled when awaited below */
+    });
+    await playChimeLead();
+
+    for (let i = 0; i < list.length; i++) {
+      const clip = list[i];
       if (sequenceId !== activeSequenceId) return;
       try {
-        await playClip(clip);
+        const blob = await (i === 0 ? firstBlob : synthesizeClip(clip));
+        if (sequenceId !== activeSequenceId) return;
+        await playBlobAndWait(blob);
       } catch (err) {
         console.warn("[voice] Piper playback failed, using browser voice", err);
         if (sequenceId !== activeSequenceId) return;
@@ -167,6 +177,7 @@ export function flushPendingAnnouncements(): void {
 export function cancelAnnouncement(): void {
   activeSequenceId++;
   stopActive();
+  stopChime();
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
     try {
       window.speechSynthesis.cancel();

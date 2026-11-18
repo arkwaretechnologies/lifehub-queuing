@@ -1,3 +1,5 @@
+import type { PiperVoiceChoice } from "@/queue/piperVoices";
+
 export type QueueCounterCode = string;
 
 export type QueueScreen = {
@@ -40,7 +42,7 @@ export type MediaPlaylistItemType = "video" | "youtube" | "image";
 
 export type QueueVoiceSettings = {
   id: string;
-  piper_voice: "hfc_female_medium" | "hfc_male_medium";
+  piper_voice: PiperVoiceChoice;
   updated_at: string;
 };
 

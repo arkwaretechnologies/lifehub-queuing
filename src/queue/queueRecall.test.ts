@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   announcementSpeakKey,
+  calledAtTimestampChanged,
   ticketNeedsAnnouncement,
   ticketSnapshotFromTicket,
 } from "@/queue/queueRecall";
 
 const CALLED_AT = "2026-03-30T10:00:00.000Z";
 const CALLED_AT_2 = "2026-03-30T10:01:00.000Z";
+
+describe("calledAtTimestampChanged", () => {
+  it("detects 1ms recall bump", () => {
+    expect(calledAtTimestampChanged("2026-03-30T10:00:00.000Z", "2026-03-30T10:00:00.001Z")).toBe(true);
+  });
+});
 
 describe("ticketNeedsAnnouncement", () => {
   it("announces when active dept changes LAB to IMAG with same called_at", () => {
@@ -33,6 +40,20 @@ describe("ticketNeedsAnnouncement", () => {
       status: "Called" as const,
       called_at: CALLED_AT_2,
       notes: "[Active] dept=IMAG",
+    };
+    expect(ticketNeedsAnnouncement(next, prev)).toBe(true);
+  });
+
+  it("announces first call Waiting to Called", () => {
+    const prev = ticketSnapshotFromTicket({
+      status: "Waiting",
+      called_at: null,
+      notes: null,
+    });
+    const next = {
+      status: "Called" as const,
+      called_at: CALLED_AT,
+      notes: null,
     };
     expect(ticketNeedsAnnouncement(next, prev)).toBe(true);
   });

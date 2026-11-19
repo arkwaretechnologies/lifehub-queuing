@@ -2,8 +2,8 @@ import { parseActiveDept } from "@/queue/ticketRouting";
 import type { QueueStatus, QueueTicket } from "@/queue/types";
 
 /**
- * Matches LifeHub main app (`src/lib/queueRecall.ts`).
- * Recall bumps `queue_tickets.called_at` without changing status so TV boards re-announce.
+ * Must stay in sync with LifeHub `src/lib/queueRecall.ts` (TV announce contract).
+ * Recall bumps `queue_tickets.called_at` without changing status so lobby boards re-announce.
  */
 export const RECALLABLE_QUEUE_STATUSES: QueueStatus[] = ["Called", "Serving", "Collected"];
 

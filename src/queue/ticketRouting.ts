@@ -5,13 +5,12 @@ export type TicketRoutingFields = {
   notes?: string | null;
 };
 
-/** Parsed from ticket notes, e.g. `[Active] dept=IMAG`. */
+/** Parsed from ticket notes — must match LifeHub `parseActiveDeptFromNotes` in queueActiveDept.ts */
 export function parseActiveDept(notes: string | null | undefined): "LAB" | "IMAG" | null {
-  const match = (notes ?? "").match(/\[Active\]\s*dept=(\w+)/i);
-  if (!match) return null;
-  const dept = match[1].toUpperCase();
-  if (dept === "LAB" || dept === "IMAG") return dept;
-  return null;
+  const m = String(notes ?? "").match(/^\[Active\]\s+dept=(LAB|IMAG)\s*$/im);
+  if (!m) return null;
+  const dept = m[1]?.toUpperCase();
+  return dept === "LAB" || dept === "IMAG" ? dept : null;
 }
 
 export function hasSpecimenCollected(notes: string | null | undefined): boolean {

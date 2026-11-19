@@ -1,0 +1,12 @@
+-- Lobby TV (lifehub-queuing) uses Supabase Realtime on queue_tickets UPDATE.
+-- Default REPLICA IDENTITY (primary key only) can omit unchanged columns in the `new` payload.
+-- If the TV misses called_at / notes on partial updates, set FULL identity (ops review in prod):
+--
+--   SELECT c.relname, c.relreplident FROM pg_class c
+--   JOIN pg_namespace n ON n.oid = c.relnamespace
+--   WHERE c.relname = 'queue_tickets' AND n.nspname = 'public';
+--   relreplident: d = default, f = full
+--
+-- LifeHub MDC (2026-03-30): relreplident = 'd' (default).
+
+-- ALTER TABLE public.queue_tickets REPLICA IDENTITY FULL;

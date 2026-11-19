@@ -20,9 +20,12 @@ import { VoiceAgentDock } from "@/components/VoiceAgent/VoiceAgentDock";
 import {
   cancelAnnouncement,
   flushPendingAnnouncements,
+  flushQueuedTicketAnnouncements,
   prefetchAnnouncement,
   speakAnnouncement,
 } from "@/queue/announceClient";
+import { shouldCommitAnnouncementSnapshot } from "@/queue/announceSpeakOutcome";
+import { queueTicketAnnouncement, type TicketAnnounceCommit } from "@/queue/ticketAnnounceQueue";
 import {
   isAnnouncementAudioUnlocked,
   isPiperVoiceModelLoaded,
@@ -281,18 +284,12 @@ export function QueueScreenClient({
     beginVoiceBoot("retry");
   }, [beginVoiceBoot]);
 
-  const handleTestVoice = useCallback(async () => {
-    if (!voiceReady) return;
-    if (!isAnnouncementAudioUnlocked()) {
-      const ok = await unlockAnnouncementAudio();
-      if (ok) {
-        setAudioUnlocked(true);
-        flushPendingAnnouncements();
-      }
-      return;
+  const applyAnnouncementCommits = useCallback((commits: TicketAnnounceCommit[]) => {
+    for (const item of commits) {
+      lastSpokenKeyRef.current = item.speakKey;
+      lastTicketSnapshotRef.current.set(item.ticketId, item.snapshot);
     }
-    speakAnnouncement("Voice test.");
-  }, [voiceReady]);
+  }, []);
 
   const handleEchoChange = useCallback((value: number) => {
     setVoiceEcho(value);
@@ -489,30 +486,72 @@ export function QueueScreenClient({
     };
   }, [voiceBootNonce]);
 
-  function announceTicketIfNeeded(
-    ticket: QueueTicket,
-    prevSnap?: TicketSnapshot,
-    options?: { fromRealtime?: boolean },
-  ): void {
-    if (!voiceReady) return;
-    const prev = prevSnap ?? lastTicketSnapshotRef.current.get(ticket.id);
-    if (!ticketNeedsAnnouncement(ticket, prev, options)) return;
+  const announceTicketIfNeeded = useCallback(
+    (
+      ticket: QueueTicket,
+      prevSnap?: TicketSnapshot,
+      options?: { fromRealtime?: boolean },
+    ): void => {
+      const prev = prevSnap ?? lastTicketSnapshotRef.current.get(ticket.id);
+      if (!ticketNeedsAnnouncement(ticket, prev, options)) return;
 
-    const activeDept = snapshotActiveDept(ticket.notes);
-    const speakKey = announcementSpeakKey(ticket.id, ticket.called_at, activeDept);
-    if (lastSpokenKeyRef.current === speakKey) return;
+      const activeDept = snapshotActiveDept(ticket.notes);
+      const speakKey = announcementSpeakKey(ticket.id, ticket.called_at, activeDept);
+      if (lastSpokenKeyRef.current === speakKey) return;
 
-    const text = buildAnnouncementText(
-      ticket,
-      counterLabelByIdRef.current,
-      labCounterIdRef.current,
-      imagingCounterIdRef.current,
+      const text = buildAnnouncementText(
+        ticket,
+        counterLabelByIdRef.current,
+        labCounterIdRef.current,
+        imagingCounterIdRef.current,
+      );
+      prefetchAnnouncement(text);
+
+      const commit: TicketAnnounceCommit = {
+        ticketId: ticket.id,
+        speakKey,
+        text,
+        snapshot: ticketSnapshotFromTicket(ticket),
+      };
+
+      if (!voiceReady) {
+        queueTicketAnnouncement(commit);
+        return;
+      }
+
+      const result = speakAnnouncement(text, { ifLocked: "none" });
+      if (shouldCommitAnnouncementSnapshot(result)) {
+        applyAnnouncementCommits([commit]);
+      } else if (result === "queued_unlock") {
+        queueTicketAnnouncement(commit);
+      }
+    },
+    [voiceReady, applyAnnouncementCommits],
+  );
+
+  const drainDeferredAnnouncements = useCallback(() => {
+    if (!voiceReady || !isAnnouncementAudioUnlocked()) return;
+    const commits = flushQueuedTicketAnnouncements((text) =>
+      speakAnnouncement(text, { ifLocked: "none" }),
     );
-    prefetchAnnouncement(text);
-    speakAnnouncement(text);
-    lastSpokenKeyRef.current = speakKey;
-    lastTicketSnapshotRef.current.set(ticket.id, ticketSnapshotFromTicket(ticket));
-  }
+    applyAnnouncementCommits(commits);
+    const ticket = pickTicketToAnnounce(tickets, lastTicketSnapshotRef.current);
+    if (ticket) announceTicketIfNeeded(ticket);
+  }, [voiceReady, tickets, applyAnnouncementCommits, announceTicketIfNeeded]);
+
+  const handleTestVoice = useCallback(async () => {
+    if (!voiceReady) return;
+    if (!isAnnouncementAudioUnlocked()) {
+      const ok = await unlockAnnouncementAudio();
+      if (ok) {
+        setAudioUnlocked(true);
+        flushPendingAnnouncements();
+        drainDeferredAnnouncements();
+      }
+      return;
+    }
+    speakAnnouncement("Voice test.");
+  }, [voiceReady, drainDeferredAnnouncements]);
 
   function prefetchIfNewlyCalled(
     ticket: QueueTicket,
@@ -687,13 +726,18 @@ export function QueueScreenClient({
     };
   }, [screenId, counterWatchKey]);
 
+  // When voice or sound becomes available, play anything deferred (call before poll backup).
+  useEffect(() => {
+    drainDeferredAnnouncements();
+  }, [voiceReady, audioUnlocked, drainDeferredAnnouncements]);
+
   // Backup path when poll refresh applies ticket changes (realtime handler is primary).
   useEffect(() => {
-    if (typeof window === "undefined" || !voiceReady) return;
+    if (typeof window === "undefined" || !voiceReady || !audioUnlocked) return;
     const ticket = pickTicketToAnnounce(tickets, lastTicketSnapshotRef.current);
     if (!ticket) return;
     announceTicketIfNeeded(ticket);
-  }, [tickets, counterLabelById, labCounterId, imagingCounterId, voiceReady]);
+  }, [tickets, counterLabelById, labCounterId, imagingCounterId, voiceReady, audioUnlocked, announceTicketIfNeeded]);
 
   // Stop any in-flight announcement when the screen unmounts.
   useEffect(() => {
@@ -806,6 +850,7 @@ export function QueueScreenClient({
             if (ok) {
               setAudioUnlocked(true);
               flushPendingAnnouncements();
+              drainDeferredAnnouncements();
             }
           }}
         />

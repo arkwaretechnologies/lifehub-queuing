@@ -8,8 +8,15 @@ import {
 } from "@/queue/piperTts";
 import { createVoiceAudio, getVoiceVolume } from "@/queue/voiceVolume";
 import { playChimeLead, preloadChime, stopChime } from "@/queue/chime";
+import { shouldCommitAnnouncementSnapshot, type SpeakAnnouncementResult } from "@/queue/announceSpeakOutcome";
+import {
+  dequeueTicketAnnouncement,
+  peekQueuedTicketAnnouncements,
+  type TicketAnnounceCommit,
+} from "@/queue/ticketAnnounceQueue";
 
 export type AnnouncementVoice = "primary" | "bisaya";
+export type { SpeakAnnouncementResult };
 
 const prefetchedTexts = new Set<string>();
 const pendingClips: AnnouncementClip[] = [];
@@ -17,6 +24,11 @@ const pendingClips: AnnouncementClip[] = [];
 export type AnnouncementClip = {
   text: string;
   voice?: AnnouncementVoice;
+};
+
+export type SpeakAnnouncementOptions = {
+  /** When audio is locked: default enqueues generic `pendingClips` (voice test, etc.). */
+  ifLocked?: "enqueue_clips" | "none";
 };
 
 let activeAudio: HTMLAudioElement | null = null;
@@ -148,23 +160,29 @@ function runSequence(list: AnnouncementClip[]): void {
  * Speak announcements with Piper (public/piper). Falls back to browser
  * speechSynthesis when Piper or autoplay fails. Requires one-time audio unlock.
  */
-export function speakAnnouncement(clips: AnnouncementClip[] | string): void {
-  if (typeof window === "undefined") return;
+export function speakAnnouncement(
+  clips: AnnouncementClip[] | string,
+  options?: SpeakAnnouncementOptions,
+): SpeakAnnouncementResult {
+  if (typeof window === "undefined") return "skipped";
 
   const list: AnnouncementClip[] =
     typeof clips === "string"
       ? [{ text: clips }]
       : clips.filter((c) => c && c.text && c.text.trim().length > 0);
-  if (!list.length) return;
+  if (!list.length) return "skipped";
 
   if (!isAnnouncementAudioUnlocked()) {
-    for (const clip of list) {
-      if (!pendingClips.some((p) => p.text === clip.text)) pendingClips.push(clip);
+    if (options?.ifLocked !== "none") {
+      for (const clip of list) {
+        if (!pendingClips.some((p) => p.text === clip.text)) pendingClips.push(clip);
+      }
     }
-    return;
+    return "queued_unlock";
   }
 
   runSequence(list);
+  return "played";
 }
 
 /** Call after staff taps Enable sound — plays any announcements that arrived while locked. */
@@ -172,6 +190,24 @@ export function flushPendingAnnouncements(): void {
   if (!isAnnouncementAudioUnlocked() || pendingClips.length === 0) return;
   const list = pendingClips.splice(0, pendingClips.length);
   runSequence(list);
+}
+
+/**
+ * Play ticket announces that were queued while audio was locked.
+ * Returns commits for items that actually started playback (caller updates snapshots).
+ */
+export function flushQueuedTicketAnnouncements(
+  speak: (text: string, options?: SpeakAnnouncementOptions) => SpeakAnnouncementResult,
+): TicketAnnounceCommit[] {
+  if (!isAnnouncementAudioUnlocked()) return [];
+  const committed: TicketAnnounceCommit[] = [];
+  for (const item of peekQueuedTicketAnnouncements()) {
+    const result = speak(item.text, { ifLocked: "none" });
+    if (shouldCommitAnnouncementSnapshot(result)) {
+      if (dequeueTicketAnnouncement(item.speakKey)) committed.push(item);
+    }
+  }
+  return committed;
 }
 
 export function cancelAnnouncement(): void {

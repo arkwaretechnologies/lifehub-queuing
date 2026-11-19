@@ -53,7 +53,7 @@ import {
 } from "@/queue/voiceVolume";
 import {
   announcementSpeakKey,
-  pickTicketToAnnounce,
+  pickTicketsToAnnounce,
   shouldAnnounceOnCalledAtChange,
   snapshotActiveDept,
   ticketNeedsAnnouncement,
@@ -185,7 +185,8 @@ export function QueueScreenClient({
   const [voiceVolume, setVoiceVolumeState] = useState(DEFAULT_VOICE_VOLUME);
   const [voiceEcho, setVoiceEchoState] = useState(DEFAULT_VOICE_ECHO);
   const lastTicketSnapshotRef = useRef<Map<string, TicketSnapshot>>(new Map());
-  const lastSpokenKeyRef = useRef<string | null>(null);
+  const lastSpokenKeyByTicketRef = useRef<Map<string, string>>(new Map());
+  const initialSeedTicketIdsRef = useRef<Set<string>>(new Set());
   const paidLabRequestIdsRef = useRef<Set<string> | null>(paidLabRequestIds);
   const counterLabelByIdRef = useRef(new Map<string, string>());
   const labCounterIdRef = useRef<string | null>(null);
@@ -286,7 +287,7 @@ export function QueueScreenClient({
 
   const applyAnnouncementCommits = useCallback((commits: TicketAnnounceCommit[]) => {
     for (const item of commits) {
-      lastSpokenKeyRef.current = item.speakKey;
+      lastSpokenKeyByTicketRef.current.set(item.ticketId, item.speakKey);
       lastTicketSnapshotRef.current.set(item.ticketId, item.snapshot);
     }
   }, []);
@@ -490,14 +491,33 @@ export function QueueScreenClient({
     (
       ticket: QueueTicket,
       prevSnap?: TicketSnapshot,
-      options?: { fromRealtime?: boolean },
+      options?: { fromRealtime?: boolean; fromPoll?: boolean },
     ): void => {
       const prev = prevSnap ?? lastTicketSnapshotRef.current.get(ticket.id);
-      if (!ticketNeedsAnnouncement(ticket, prev, options)) return;
+      const pollFirstSight =
+        Boolean(options?.fromPoll) &&
+        !prev &&
+        !initialSeedTicketIdsRef.current.has(ticket.id);
+      if (
+        !ticketNeedsAnnouncement(ticket, prev, {
+          fromRealtime: options?.fromRealtime,
+          pollFirstSight,
+        })
+      ) {
+        return;
+      }
 
       const activeDept = snapshotActiveDept(ticket.notes);
       const speakKey = announcementSpeakKey(ticket.id, ticket.called_at, activeDept);
-      if (lastSpokenKeyRef.current === speakKey) return;
+      if (lastSpokenKeyByTicketRef.current.get(ticket.id) === speakKey) return;
+
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[voice]", ticket.id, ticket.queue_display, {
+          speakKey,
+          pollFirstSight: pollFirstSight || undefined,
+          fromRealtime: options?.fromRealtime || undefined,
+        });
+      }
 
       const text = buildAnnouncementText(
         ticket,
@@ -535,8 +555,17 @@ export function QueueScreenClient({
       speakAnnouncement(text, { ifLocked: "none" }),
     );
     applyAnnouncementCommits(commits);
-    const ticket = pickTicketToAnnounce(tickets, lastTicketSnapshotRef.current);
-    if (ticket) announceTicketIfNeeded(ticket);
+    const pollPickOptions = {
+      fromPoll: true as const,
+      seededAtLoadIds: initialSeedTicketIdsRef.current,
+    };
+    for (const ticket of pickTicketsToAnnounce(
+      tickets,
+      lastTicketSnapshotRef.current,
+      pollPickOptions,
+    )) {
+      announceTicketIfNeeded(ticket, undefined, { fromPoll: true });
+    }
   }, [voiceReady, tickets, applyAnnouncementCommits, announceTicketIfNeeded]);
 
   const handleTestVoice = useCallback(async () => {
@@ -734,9 +763,17 @@ export function QueueScreenClient({
   // Backup path when poll refresh applies ticket changes (realtime handler is primary).
   useEffect(() => {
     if (typeof window === "undefined" || !voiceReady || !audioUnlocked) return;
-    const ticket = pickTicketToAnnounce(tickets, lastTicketSnapshotRef.current);
-    if (!ticket) return;
-    announceTicketIfNeeded(ticket);
+    const pollPickOptions = {
+      fromPoll: true as const,
+      seededAtLoadIds: initialSeedTicketIdsRef.current,
+    };
+    for (const ticket of pickTicketsToAnnounce(
+      tickets,
+      lastTicketSnapshotRef.current,
+      pollPickOptions,
+    )) {
+      announceTicketIfNeeded(ticket, undefined, { fromPoll: true });
+    }
   }, [tickets, counterLabelById, labCounterId, imagingCounterId, voiceReady, audioUnlocked, announceTicketIfNeeded]);
 
   // Stop any in-flight announcement when the screen unmounts.
@@ -751,6 +788,7 @@ export function QueueScreenClient({
   useEffect(() => {
     if (snapshotSeededRef.current) return;
     snapshotSeededRef.current = true;
+    initialSeedTicketIdsRef.current = new Set(initialTickets.map((t) => t.id));
     for (const t of initialTickets) {
       lastTicketSnapshotRef.current.set(t.id, ticketSnapshotFromTicket(t));
     }

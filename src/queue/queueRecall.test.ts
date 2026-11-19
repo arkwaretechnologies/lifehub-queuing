@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { QueueTicket } from "@/queue/types";
 import {
   announcementSpeakKey,
   calledAtTimestampChanged,
+  pickTicketsToAnnounce,
   ticketNeedsAnnouncement,
   ticketSnapshotFromTicket,
 } from "@/queue/queueRecall";
@@ -58,11 +60,68 @@ describe("ticketNeedsAnnouncement", () => {
     expect(ticketNeedsAnnouncement(next, prev)).toBe(true);
   });
 
+  it("announces poll first sight when Called and called_at set", () => {
+    const next = {
+      status: "Called" as const,
+      called_at: CALLED_AT,
+      notes: null,
+    };
+    expect(ticketNeedsAnnouncement(next, undefined, { pollFirstSight: true })).toBe(true);
+    expect(ticketNeedsAnnouncement(next, undefined)).toBe(false);
+  });
+
+  it("does not poll first sight without called_at", () => {
+    const next = {
+      status: "Called" as const,
+      called_at: null,
+      notes: null,
+    };
+    expect(ticketNeedsAnnouncement(next, undefined, { pollFirstSight: true })).toBe(false);
+  });
+
   it("does not repeat when neither dept nor called_at changed", () => {
     const notes = "[Active] dept=IMAG";
     const prev = ticketSnapshotFromTicket({ status: "Called", called_at: CALLED_AT, notes });
     const next = { status: "Called" as const, called_at: CALLED_AT, notes };
     expect(ticketNeedsAnnouncement(next, prev)).toBe(false);
+  });
+});
+
+describe("pickTicketsToAnnounce", () => {
+  const base = (id: string, display: string, called_at: string | null, status: QueueTicket["status"]) =>
+    ({
+      id,
+      counter_id: "c1",
+      priority_id: 1,
+      queue_number: 1,
+      queue_display: display,
+      ticket_date: "2026-03-30",
+      status,
+      issued_at: "2026-03-30T09:00:00.000Z",
+      called_at,
+      serving_at: null,
+      completed_at: null,
+      lab_request_id: null,
+      includes_lab: false,
+      includes_imaging: false,
+      notes: null,
+    }) satisfies QueueTicket;
+
+  it("returns multiple candidates newest first", () => {
+    const snap = new Map<string, ReturnType<typeof ticketSnapshotFromTicket>>();
+    snap.set(
+      "p1",
+      ticketSnapshotFromTicket({ status: "Called", called_at: CALLED_AT, notes: null }),
+    );
+    const tickets = [
+      base("p1", "P - 001", CALLED_AT, "Called"),
+      base("r1", "R - 005", CALLED_AT_2, "Called"),
+    ];
+    const picked = pickTicketsToAnnounce(tickets, snap, {
+      fromPoll: true,
+      seededAtLoadIds: new Set(["p1"]),
+    });
+    expect(picked.map((t) => t.id)).toEqual(["r1"]);
   });
 });
 

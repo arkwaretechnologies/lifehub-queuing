@@ -62,17 +62,34 @@ export function calledAtTimestampChanged(
  * True when LifeHub called the patient, bumped `called_at` for recall, or routed LAB↔IMAG.
  * Requires a prior snapshot so the TV does not speak every ticket on first load.
  */
+export type TicketNeedsAnnouncementOptions = {
+  fromRealtime?: boolean;
+  /**
+   * Poll backup: ticket appeared on this TV after load with no prior snapshot
+   * (not in initial seed). Safe to announce first sight when `called_at` is set.
+   */
+  pollFirstSight?: boolean;
+};
+
 export function ticketNeedsAnnouncement(
   ticket: Pick<QueueTicket, "called_at" | "status" | "notes">,
   prev: TicketSnapshot | undefined,
-  options?: { fromRealtime?: boolean },
+  options?: TicketNeedsAnnouncementOptions,
 ): boolean {
   if (!shouldAnnounceOnCalledAtChange(ticket.status)) return false;
 
   const activeDept = snapshotActiveDept(ticket.notes);
 
   if (!prev) {
-    return Boolean(options?.fromRealtime && ticket.status === "Called");
+    if (options?.fromRealtime && ticket.status === "Called") return true;
+    if (
+      options?.pollFirstSight &&
+      ticket.called_at &&
+      shouldAnnounceOnCalledAtChange(ticket.status)
+    ) {
+      return true;
+    }
+    return false;
   }
 
   if (prev.active_dept !== activeDept) return true;
@@ -91,20 +108,46 @@ export function ticketNeedsAnnouncement(
   );
 }
 
+function sortTicketsForAnnounce(tickets: QueueTicket[]): QueueTicket[] {
+  return tickets.slice().sort((a, b) => {
+    const aKey = a.called_at ?? a.issued_at;
+    const bKey = b.called_at ?? b.issued_at;
+    return String(bKey).localeCompare(String(aKey));
+  });
+}
+
+export type PickTicketsToAnnounceOptions = {
+  /** Use poll first-sight rule for tickets missing from snapshot (not initial load). */
+  fromPoll?: boolean;
+  /** Ticket ids snapshotted on page load — skip poll first-sight for these without a prev row. */
+  seededAtLoadIds?: Set<string>;
+};
+
+/** Newest `called_at` first (recall / latest call). */
+export function pickTicketsToAnnounce(
+  tickets: QueueTicket[],
+  snapshot: Map<string, TicketSnapshot>,
+  options?: PickTicketsToAnnounceOptions,
+): QueueTicket[] {
+  const candidates = tickets.filter((t) => {
+    const prev = snapshot.get(t.id);
+    const pollFirstSight =
+      Boolean(options?.fromPoll) &&
+      !prev &&
+      (!options?.seededAtLoadIds || !options.seededAtLoadIds.has(t.id));
+    return ticketNeedsAnnouncement(t, prev, { pollFirstSight, fromRealtime: false });
+  });
+  return sortTicketsForAnnounce(candidates);
+}
+
 /** Among tickets that need announcing, prefer the one with the newest `called_at` (recall target). */
 export function pickTicketToAnnounce(
   tickets: QueueTicket[],
   snapshot: Map<string, TicketSnapshot>,
+  options?: PickTicketsToAnnounceOptions,
 ): QueueTicket | null {
-  const candidates = tickets.filter((t) => ticketNeedsAnnouncement(t, snapshot.get(t.id)));
-  if (!candidates.length) return null;
-  return (
-    candidates.sort((a, b) => {
-      const aKey = a.called_at ?? a.issued_at;
-      const bKey = b.called_at ?? b.issued_at;
-      return String(bKey).localeCompare(String(aKey));
-    })[0] ?? null
-  );
+  const list = pickTicketsToAnnounce(tickets, snapshot, options);
+  return list[0] ?? null;
 }
 
 export function announcementSpeakKey(
